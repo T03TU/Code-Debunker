@@ -19,6 +19,7 @@ import {
   LoaderCircle,
   Play,
   RefreshCw,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Upload,
@@ -33,6 +34,7 @@ import {
   type Capabilities,
 } from "@/lib/api";
 import { samples } from "@/lib/samples";
+import LLMSettingsDialog from "@/components/LLMSettingsDialog";
 import type {
   AnalyzeResponse,
   DebunkSections,
@@ -83,6 +85,8 @@ export default function App() {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [help, setHelp] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const promptedForLLM = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const stream = useRef<EventSource | null>(null);
   const sourceRevision = useRef(0);
@@ -90,8 +94,13 @@ export default function App() {
 
   async function refreshCapabilities() {
     try {
-      setCapabilities(await getCapabilities());
+      const result = await getCapabilities();
+      setCapabilities(result);
       setApiOnline(true);
+      if (!promptedForLLM.current) {
+        promptedForLLM.current = true;
+        if (!result.llm_configured) setSettingsOpen(true);
+      }
     } catch {
       setApiOnline(false);
       setCapabilities(null);
@@ -248,6 +257,10 @@ export default function App() {
 
   function explain() {
     if (!analysis || !selected || generating) return;
+    if (!capabilities?.llm_configured) {
+      setSettingsOpen(true);
+      return;
+    }
     resetLearning();
     setGenerating(true);
     setError(null);
@@ -334,6 +347,13 @@ export default function App() {
           </span>
         </div>
         <button
+          className="button settings-trigger"
+          onClick={() => setSettingsOpen(true)}
+          aria-haspopup="dialog"
+        >
+          <Settings2 size={17} /> LLM settings
+        </button>
+        <button
           className="icon-button"
           onClick={() => setHelp(!help)}
           aria-label="Show getting started guide"
@@ -361,9 +381,9 @@ export default function App() {
           <p>
             <strong>Explain function</strong> creates a five-part learning guide
             and tests. <strong>Run tests</strong> executes generated tests
-            inside an isolated Docker container. These features require a
-            configured backend API key; test execution also requires the runner
-            image.
+            inside an isolated Docker container. These features require a model
+            connection in <strong>LLM settings</strong>; test execution also
+            requires the runner image.
           </p>
           <p>
             Use Ctrl/Cmd + Enter in the editor to analyze. Editing your source
@@ -399,10 +419,14 @@ export default function App() {
                   : "API offline"}
               <RefreshCw size={12} />
             </button>
-            <span>
+            <button
+              className="connection"
+              onClick={() => setSettingsOpen(true)}
+              aria-haspopup="dialog"
+            >
               <Sparkles size={13} />
-              {aiReady ? "Explanations enabled" : "Explanations need API key"}
-            </span>
+              {aiReady ? "Explanations enabled" : "Connect an LLM"}
+            </button>
             <span>
               <ShieldCheck size={13} />
               {sandboxReady ? "Sandbox ready" : "Sandbox unavailable"}
@@ -859,7 +883,7 @@ export default function App() {
                   </div>
                   <button
                     className="button primary"
-                    disabled={!selected || !aiReady || busy || analyzing}
+                    disabled={!selected || busy || analyzing}
                     onClick={explain}
                   >
                     {generating ? (
@@ -876,8 +900,14 @@ export default function App() {
                 </div>
                 {!aiReady && (
                   <div className="notice">
-                    Configure OPENAI_API_KEY on the backend to generate
-                    explanations. You can explore structure without a key.
+                    <button
+                      className="inline-link"
+                      onClick={() => setSettingsOpen(true)}
+                    >
+                      Connect an LLM
+                    </button>{" "}
+                    to generate explanations. Structural analysis is available
+                    without one.
                   </div>
                 )}
                 {generating && (
@@ -993,7 +1023,13 @@ export default function App() {
                 )}
                 {!aiReady && !suite && (
                   <div className="notice">
-                    An API key is needed to generate the test suite.
+                    <button
+                      className="inline-link"
+                      onClick={() => setSettingsOpen(true)}
+                    >
+                      Connect an LLM
+                    </button>{" "}
+                    to generate the test suite.
                   </div>
                 )}
                 {simulating && (
@@ -1091,6 +1127,17 @@ export default function App() {
           </span>
         </footer>
       </main>
+      {settingsOpen && (
+        <LLMSettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          onSaved={() => {
+            resetLearning();
+            setError(null);
+            setSettingsOpen(false);
+            void refreshCapabilities();
+          }}
+        />
+      )}
     </div>
   );
 }

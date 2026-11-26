@@ -13,7 +13,11 @@ async function readResponse<T>(res: Response): Promise<T> {
     const detail =
       typeof body.detail === "string"
         ? body.detail
-        : JSON.stringify(body.detail);
+        : Array.isArray(body.detail)
+          ? body.detail
+              .map((item: { msg?: string }) => item.msg || "Invalid input")
+              .join(" ")
+          : "The request could not be completed.";
     throw new Error(detail || `Request failed (${res.status})`);
   }
   return res.json();
@@ -29,6 +33,75 @@ export interface Capabilities {
 
 export async function getCapabilities(): Promise<Capabilities> {
   return readResponse(await fetch(`${BASE}/capabilities`));
+}
+
+export type LLMProvider =
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "azure"
+  | "bedrock"
+  | "vertex_ai"
+  | "ollama"
+  | "lmstudio"
+  | "openrouter"
+  | "compatible"
+  | "custom";
+export const credentialFields = [
+  "api_key",
+  "aws_access_key_id",
+  "aws_secret_access_key",
+  "aws_session_token",
+  "vertex_credentials",
+] as const;
+export type CredentialField = (typeof credentialFields)[number];
+export interface LLMForm {
+  provider: LLMProvider;
+  model: string;
+  base_url: string;
+  output_mode: "tools" | "json";
+  api_version: string;
+  aws_region_name: string;
+  vertex_project: string;
+  vertex_location: string;
+  api_key: string;
+  aws_access_key_id: string;
+  aws_secret_access_key: string;
+  aws_session_token: string;
+  vertex_credentials: string;
+  clear_credentials: boolean;
+}
+export interface LLMSettings extends Omit<
+  LLMForm,
+  CredentialField | "clear_credentials"
+> {
+  configured: boolean;
+  saved_credentials: Record<CredentialField, boolean>;
+}
+export async function getLLMSettings(): Promise<LLMSettings> {
+  return readResponse(
+    await fetch(`${BASE}/llm-settings`, { cache: "no-store" }),
+  );
+}
+export async function saveLLMSettings(settings: LLMForm): Promise<LLMSettings> {
+  return readResponse(
+    await fetch(`${BASE}/llm-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    }),
+  );
+}
+export async function testLLMConnection(
+  settings: LLMForm,
+): Promise<{ ok: boolean; message: string }> {
+  return readResponse(
+    await fetch(`${BASE}/llm-settings/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    }),
+  );
 }
 
 export async function analyzeCode(
