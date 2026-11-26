@@ -12,6 +12,8 @@ __pycache__/
 .env.*
 !.env.example
 *.log
+.agent
+GEMINI.md
 
 # Local editor state
 .vscode/
