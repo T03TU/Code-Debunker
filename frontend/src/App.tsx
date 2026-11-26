@@ -20,6 +20,7 @@ import {
   Play,
   RefreshCw,
   ShieldCheck,
+  Settings as SettingsIcon,
   Sparkles,
   Upload,
   X,
@@ -33,6 +34,7 @@ import {
   type Capabilities,
 } from "@/lib/api";
 import { samples } from "@/lib/samples";
+import Settings from "@/components/Settings";
 import type {
   AnalyzeResponse,
   DebunkSections,
@@ -83,6 +85,11 @@ export default function App() {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [help, setHelp] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<"appearance" | "llm">(
+    "appearance",
+  );
+  const promptedForLLM = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const stream = useRef<EventSource | null>(null);
   const sourceRevision = useRef(0);
@@ -90,8 +97,13 @@ export default function App() {
 
   async function refreshCapabilities() {
     try {
-      setCapabilities(await getCapabilities());
+      const result = await getCapabilities();
+      setCapabilities(result);
       setApiOnline(true);
+      if (!promptedForLLM.current) {
+        promptedForLLM.current = true;
+        if (!result.llm_configured) openSettings("llm");
+      }
     } catch {
       setApiOnline(false);
       setCapabilities(null);
@@ -112,6 +124,10 @@ export default function App() {
     setSuite(null);
     setQa(null);
     setExecution(null);
+  }
+  function openSettings(section: "appearance" | "llm") {
+    setSettingsSection(section);
+    setSettingsOpen(true);
   }
   function invalidate() {
     sourceRevision.current++;
@@ -248,6 +264,10 @@ export default function App() {
 
   function explain() {
     if (!analysis || !selected || generating) return;
+    if (!capabilities?.llm_configured) {
+      openSettings("llm");
+      return;
+    }
     resetLearning();
     setGenerating(true);
     setError(null);
@@ -282,6 +302,10 @@ export default function App() {
 
   async function runSimulation() {
     if (!analysis || !selected || simulating) return;
+    if (!capabilities?.llm_configured && !suite) {
+      openSettings("llm");
+      return;
+    }
     setSimulating(true);
     setError(null);
     setTab("tests");
@@ -333,15 +357,37 @@ export default function App() {
             Read it. Trace it. Understand it.
           </span>
         </div>
-        <button
-          className="icon-button"
-          onClick={() => setHelp(!help)}
-          aria-label="Show getting started guide"
-          aria-expanded={help}
-        >
-          <CircleHelp size={20} />
-        </button>
+        <div className="header-actions">
+          <button
+            className="icon-button"
+            onClick={() => openSettings("appearance")}
+            aria-label="Open settings"
+            title="Settings"
+          >
+            <SettingsIcon size={20} />
+          </button>
+          <button
+            className="icon-button"
+            onClick={() => setHelp(!help)}
+            aria-label="Show getting started guide"
+            aria-expanded={help}
+          >
+            <CircleHelp size={20} />
+          </button>
+        </div>
       </header>
+      {settingsOpen && (
+        <Settings
+          initialSection={settingsSection}
+          onClose={() => setSettingsOpen(false)}
+          onLLMSaved={() => {
+            resetLearning();
+            setError(null);
+            setSettingsOpen(false);
+            void refreshCapabilities();
+          }}
+        />
+      )}
       {help && (
         <aside className="help-panel">
           <button
@@ -361,9 +407,9 @@ export default function App() {
           <p>
             <strong>Explain function</strong> creates a five-part learning guide
             and tests. <strong>Run tests</strong> executes generated tests
-            inside an isolated Docker container. These features require a
-            configured backend API key; test execution also requires the runner
-            image.
+            inside an isolated Docker container. These features require a model
+            connection in Settings → LLM configuration; test execution also
+            requires the runner image.
           </p>
           <p>
             Use Ctrl/Cmd + Enter in the editor to analyze. Editing your source
@@ -399,10 +445,14 @@ export default function App() {
                   : "API offline"}
               <RefreshCw size={12} />
             </button>
-            <span>
+            <button
+              className="connection"
+              onClick={() => openSettings("llm")}
+              aria-haspopup="dialog"
+            >
               <Sparkles size={13} />
-              {aiReady ? "Explanations enabled" : "Explanations need API key"}
-            </span>
+              {aiReady ? "Explanations enabled" : "Connect an LLM"}
+            </button>
             <span>
               <ShieldCheck size={13} />
               {sandboxReady ? "Sandbox ready" : "Sandbox unavailable"}
@@ -859,7 +909,7 @@ export default function App() {
                   </div>
                   <button
                     className="button primary"
-                    disabled={!selected || !aiReady || busy || analyzing}
+                    disabled={!selected || busy || analyzing}
                     onClick={explain}
                   >
                     {generating ? (
@@ -876,8 +926,14 @@ export default function App() {
                 </div>
                 {!aiReady && (
                   <div className="notice">
-                    Configure OPENAI_API_KEY on the backend to generate
-                    explanations. You can explore structure without a key.
+                    <button
+                      className="inline-link"
+                      onClick={() => openSettings("llm")}
+                    >
+                      Connect an LLM
+                    </button>{" "}
+                    to generate explanations. Structural analysis is available
+                    without one.
                   </div>
                 )}
                 {generating && (
@@ -961,13 +1017,7 @@ export default function App() {
                   </div>
                   <button
                     className="button primary"
-                    disabled={
-                      !selected ||
-                      !sandboxReady ||
-                      (!aiReady && !suite) ||
-                      busy ||
-                      analyzing
-                    }
+                    disabled={!selected || !sandboxReady || busy || analyzing}
                     onClick={() => void runSimulation()}
                   >
                     {simulating ? (
@@ -993,7 +1043,13 @@ export default function App() {
                 )}
                 {!aiReady && !suite && (
                   <div className="notice">
-                    An API key is needed to generate the test suite.
+                    <button
+                      className="inline-link"
+                      onClick={() => openSettings("llm")}
+                    >
+                      Connect an LLM
+                    </button>{" "}
+                    to generate the test suite.
                   </div>
                 )}
                 {simulating && (
