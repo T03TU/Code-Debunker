@@ -1,6 +1,8 @@
 """Pydantic models for structured LLM output (pedagogical debunking + test synthesis)."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -30,8 +32,21 @@ class DebunkResponse(BaseModel):
     )
 
 
+class SimulatedTestCase(BaseModel):
+    """A model prediction, never a report of executed code."""
+
+    name: str = Field(..., min_length=1, description="Matching test name in test_case_names and test_code")
+    category: Literal['happy_path', 'transformation', 'edge_case', 'boundary']
+    input: str = Field(..., min_length=1, description="Concrete inputs and any required setup")
+    expected_output: str = Field(..., min_length=1, description="Expected result or exception, grounded in the source")
+    predicted_output: str = Field(..., min_length=1, description="Result predicted by reasoning through the source, without executing it")
+    steps: list[str] = Field(..., min_length=1, max_length=12,
+                             description="Ordered trace with function names, branches, intermediate values, and final result")
+    rationale: str = Field(..., min_length=1, description="Why this case matters; state assumptions and uncertainty")
+
+
 class GeneratedTestSuite(BaseModel):
-    """Synthesized unit test suite for a callable from the JSON IR."""
+    """Runnable tests and illustrative model simulations for a function or full source flow."""
 
     language: str = Field(..., description="Test framework language: 'python' or 'typescript'")
     framework: str = Field(..., description="Test framework: 'pytest' or 'jest'")
@@ -44,4 +59,9 @@ class GeneratedTestSuite(BaseModel):
     test_case_names: list[str] = Field(
         default_factory=list,
         description="Names of all individual test functions defined in test_code"
+    )
+    purpose: str = Field(..., min_length=1, description="Purpose of the code and behavior this suite checks")
+    scenarios: list[SimulatedTestCase] = Field(
+        ..., min_length=1, max_length=12,
+        description="Model-simulated cases matching the runnable tests, including normal, transformation, and boundary behavior"
     )

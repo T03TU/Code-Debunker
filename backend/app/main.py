@@ -21,7 +21,7 @@ from openai import APIConnectionError, APITimeoutError, AuthenticationError, Per
 from instructor.core import InstructorRetryException, IncompleteOutputException
 from sse_starlette.sse import EventSourceResponse
 
-from app.debunk.llm import connection_test_timeout, generate_debunk_async, generate_tests_async, test_connection
+from app.debunk.llm import connection_test_timeout, generate_debunk_async, generate_tests_async, generate_flow_tests_async, test_connection
 from app.llm_settings import LLMSettings, SettingsUpdate, get_settings, resolve_update, save_settings
 from app.debunk.uml_builder import build_class_diagram, build_dataflow_diagram
 from app.models.ir import IRSlice, ProgramIR
@@ -60,11 +60,20 @@ class AnalyzeResponse(BaseModel):
 
 class SimulateRequest(BaseModel):
     target_symbol_id: str | None = None
+    scope: Literal['function', 'flow'] = 'function'
+
+
+class TestsResponse(BaseModel):
+    analysis_id: str
+    target_symbol_id: str | None
+    scope: Literal['function', 'flow']
+    suite: GeneratedTestSuite
 
 
 class SimulateResponse(BaseModel):
     analysis_id: str
-    target_symbol_id: str
+    target_symbol_id: str | None
+    scope: Literal['function', 'flow'] = 'function'
     test_code: str
     execution: SandboxExecutionResult
 
@@ -157,13 +166,46 @@ async def _tests(session: dict[str, Any], ir_slice: IRSlice, settings: LLMSettin
         return session['tests'][target]
     feedback = None
     for _ in range(2):
-        result = await generate_tests_async(ir_slice, feedback=feedback, settings=settings)
+        explanation = session['debunks'].get(target)
+        context = {'explanation': explanation} if explanation else {}
+        result = await generate_tests_async(ir_slice, feedback=feedback, settings=settings, **context)
         errors = QAGater.validate_tests(ir_slice, result)
         if not errors:
             session['tests'][target] = result
             return result
         feedback = '\n'.join(errors)
     raise ArtifactValidationError('Test generation failed validation after one retry: ' + (feedback or 'unknown error'))
+
+
+async def _flow_tests(session: dict[str, Any], settings: LLMSettings) -> GeneratedTestSuite:
+    key = (settings.fingerprint, '__full_flow__')
+    if key in session['tests']:
+        return session['tests'][key]
+    explanations = [value for (fingerprint, _), value in session['debunks'].items()
+                    if fingerprint == settings.fingerprint]
+    feedback = None
+    for _ in range(2):
+        result = await generate_flow_tests_async(session['ir'], session['code'], explanations=explanations,
+                                                 feedback=feedback, settings=settings)
+        errors = QAGater.validate_flow_tests(session['ir'].metadata.primary_language, result)
+        if not errors:
+            session['tests'][key] = result
+            return result
+        feedback = '\n'.join(errors)
+    raise ArtifactValidationError('Test generation failed validation after one retry: ' + (feedback or 'unknown error'))
+
+
+async def _requested_tests(session: dict[str, Any], req: SimulateRequest,
+                           settings: LLMSettings) -> tuple[str | None, GeneratedTestSuite]:
+    if req.scope == 'flow':
+        key = (settings.fingerprint, '__full_flow__')
+        if key not in session['tests']:
+            _require_llm(settings)
+        return None, await _flow_tests(session, settings)
+    ir_slice = _slice(session['ir'], req.target_symbol_id)
+    if (settings.fingerprint, ir_slice.target_symbol_id) not in session['tests']:
+        _require_llm(settings)
+    return ir_slice.target_symbol_id, await _tests(session, ir_slice, settings)
 
 
 @app.post('/api/analyze', response_model=AnalyzeResponse)
@@ -244,25 +286,37 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
     return EventSourceResponse(events())
 
 
+@app.post('/api/tests/{analysis_id}', response_model=TestsResponse)
+async def generate_test_cases(analysis_id: str, req: SimulateRequest) -> TestsResponse:
+    session = _session(analysis_id)
+    try:
+        target, tests = await _requested_tests(session, req, get_settings())
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning('Test generation failed for %s (%s)', analysis_id, type(error).__name__)
+        raise HTTPException(502, _generation_error_message(error, 'tests')) from None
+    return TestsResponse(analysis_id=analysis_id, target_symbol_id=target, scope=req.scope, suite=tests)
+
+
 @app.post('/api/simulate/{analysis_id}', response_model=SimulateResponse)
 async def simulate(analysis_id: str, req: SimulateRequest) -> SimulateResponse:
     session = _session(analysis_id)
-    ir_slice = _slice(session['ir'], req.target_symbol_id)
     settings = get_settings()
     runner = DockerSandboxRunner()
     available, reason = await asyncio.to_thread(runner.availability)
     if not available:
         raise HTTPException(503, reason)
-    if (settings.fingerprint, ir_slice.target_symbol_id) not in session['tests']:
-        _require_llm(settings)
     try:
-        tests = await _tests(session, ir_slice, settings)
+        target, tests = await _requested_tests(session, req, settings)
+    except HTTPException:
+        raise
     except Exception as error:
         logger.warning('Test generation failed')
         raise HTTPException(502, _generation_error_message(error, 'tests')) from None
     execution = await asyncio.to_thread(runner.run_tests, source_code=session['code'],
-                                       test_code=tests.test_code, language=ir_slice.primary_language)
-    return SimulateResponse(analysis_id=analysis_id, target_symbol_id=ir_slice.target_symbol_id,
+                                       test_code=tests.test_code, language=session['ir'].metadata.primary_language)
+    return SimulateResponse(analysis_id=analysis_id, target_symbol_id=target, scope=req.scope,
                             test_code=tests.test_code, execution=execution)
 
 

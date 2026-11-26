@@ -12,7 +12,7 @@ from app import main as api
 from app.debunk import llm
 from app.parser.graph_slicer import GraphSlicer
 from app.parser.ir_builder import build_program_ir
-from test_api import ANNOTATED, SOURCE, debunk, suite
+from test_api import ANNOTATED, FLOW_SOURCE, SOURCE, debunk, flow_suite, suite
 
 
 @pytest.fixture
@@ -176,6 +176,10 @@ def main():
     assert ir_slice.target_callable.source_excerpt in context
     assert 'return {"total": len(items)}' in context
     assert 'unrelated body must stay outside the slice' not in context
+    flow_slice = GraphSlicer(build_program_ir(FLOW_SOURCE)).extract_1hop_slice('main')
+    function_context = llm._build_slice_context(flow_slice)
+    assert 'return double(value) + 1' in function_context
+    assert 'return value * 2' not in function_context
 
 
 def test_connection_probe_validates_real_instructor_output(monkeypatch):
@@ -241,18 +245,32 @@ def test_debunk_and_tests_use_selected_settings_and_instructor_schema(monkeypatc
     async def complete(**kwargs):
         calls.append(kwargs)
         name = kwargs['tools'][0]['function']['name']
-        output = debunk() if name == 'DebunkResponse' else suite()
+        user_prompt = next(item['content'] for item in kwargs['messages'] if item['role'] == 'user')
+        if name == 'DebunkResponse':
+            output = debunk()
+        elif FLOW_SOURCE in user_prompt:
+            output = flow_suite()
+        else:
+            output = suite()
         return runtime.ModelResponse(model=kwargs['model'], choices=[{'message': {'role': 'assistant', 'content': None,
             'tool_calls': [{'id': 'call_1', 'type': 'function', 'function': {'name': name, 'arguments': output.model_dump_json()}}]},
             'finish_reason': 'tool_calls'}])
 
     monkeypatch.setattr(runtime, 'acompletion', complete)
-    ir_slice = GraphSlicer(build_program_ir(SOURCE)).extract_1hop_slice()
+    ir = build_program_ir(FLOW_SOURCE)
+    ir_slice = GraphSlicer(ir).extract_1hop_slice('double')
     settings = config.LLMSettings(provider='anthropic', model='my-model', api_key='my-secret')
     result = asyncio.run(llm.generate_debunk_async(ir_slice, settings=settings))
-    tests = asyncio.run(llm.generate_tests_async(ir_slice, settings=settings))
+    tests = asyncio.run(llm.generate_tests_async(ir_slice, settings=settings, explanation=result))
+    flow_tests = asyncio.run(llm.generate_flow_tests_async(ir, FLOW_SOURCE, explanations=[result], settings=settings))
     assert result.annotated_code == ANNOTATED
-    assert tests.test_code == suite().test_code
+    assert tests.model_dump() == suite().model_dump()
+    assert flow_tests.model_dump() == flow_suite().model_dump()
+    function_prompt, flow_prompt = [next(item['content'] for item in call['messages'] if item['role'] == 'user')
+                                    for call in calls[1:]]
+    assert FLOW_SOURCE in flow_prompt
+    assert 'return add_fee(value)' not in function_prompt
+    assert result.feynman_explanation in function_prompt and result.feynman_explanation in flow_prompt
     assert all(call['model'] == 'anthropic/my-model' and call['api_key'] == 'my-secret' for call in calls)
 
 
@@ -263,7 +281,7 @@ def test_switching_models_regenerates_explanations_and_tests(client, monkeypatch
         calls.append(('debunk', settings.model))
         return debunk()
 
-    async def generate_tests(ir_slice, feedback=None, settings=None):
+    async def generate_tests(ir_slice, feedback=None, settings=None, explanation=None):
         calls.append(('tests', settings.model))
         return suite()
 

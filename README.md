@@ -1,6 +1,6 @@
 # CodeDebunker
 
-A local code exploration workbench. Paste or upload Python, JavaScript, or TypeScript to inspect functions, variables, imports, class relationships, and data flow. Click diagram elements to highlight their source in Monaco. Select a function to generate a five-part explanation and run generated tests in Docker.
+A local code exploration workbench. Paste or upload Python, JavaScript, or TypeScript to inspect functions, variables, imports, class relationships, and data flow. Click diagram elements to highlight their source in Monaco. Generate explanations, simulate test cases for a function or the full source flow, save the results, and run generated tests in Docker.
 
 Structural analysis uses Tree-sitter and NetworkX; it needs neither an API key nor Docker and never executes submitted source.
 
@@ -24,7 +24,7 @@ Or launch directly without registering a shortcut:
 
 Python 3.11+ is required. Node.js 20+ and npm are needed only when the interface needs to be built. Dependency downloads need an internet connection on first setup. An API key and Docker are optional for opening the app and exploring code structure.
 
-The server stays in the background when you close the browser, so reopening is fast. Right-click the Applications-menu entry and choose **Stop CodeDebunker** to stop it. Terminal equivalents are:
+The server stays in the background when you close the browser, so reopening is fast. Reopening checks whether the backend source has changed and restarts an outdated managed server before opening the interface. After an update restarts the backend, analyze your source again; saved library items remain available. Right-click the Applications-menu entry and choose **Stop CodeDebunker** to stop it. Terminal equivalents are:
 
 ```bash
 ./CodeDebunker --status
@@ -75,6 +75,16 @@ Existing `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o`), and optional `OPEN
 
 **Explain function** sends the selected callable's source and immediate dependency context to the configured model. It generates language identification, a Feynman explanation, annotated code, an illustrative execution walkthrough, prerequisite concepts, and tests. It never sends the entire source file to the model. Structural validation runs before each generated artifact is emitted; one corrective retry receives the validation errors. The annotated target must preserve its executable tokens. These checks do not prove semantic correctness; use the actual test results to evaluate behavior.
 
+In **Tests & simulation**, choose **Selected function** or **Full source flow**, then select **Generate test cases**. This works independently of explanation generation and requires only your connected model. Each case shows concrete inputs, expected and model-predicted outcomes, intermediate steps, and a rationale. The suite describes the code's purpose and includes runnable pytest or Jest tests. Model predictions are illustrative and do not establish whether the tests pass.
+
+Explanations, test generation, and Docker simulations continue when you select another function or variable. Each function keeps its own progress, results, and errors; select it again to return to its work. The running-work links above the workspace also return you to an active job. Full source flow results are independent of the selected function. Editing or replacing source, analyzing again, or saving a new model configuration clears this work so old results cannot appear under a new analysis. Use the saved library to keep completed results beyond the current analysis.
+
+Function mode uses the selected callable and its immediate context. Full source flow sends the **complete submitted file**, call relationships, dependencies, and data transformations to your configured model to cover entry points and helper chains. It also supports module-level code without callable definitions. Available explanations from the same model configuration supply additional context, checked against the source. Function suites and full-flow suites have separate caches. **Run tests in Docker** executes the generated suite for the chosen scope and displays actual execution results separately from predictions. Full-flow results describe the suite as a whole; they do not mark an individual function as passing.
+
+Use **Save explanation** or **Save test cases** to keep an item in **Saved library**. The browser stores a source snapshot, filename, target, scope, explanation or scenarios and runnable test code, plus any execution report available when saving. Saved entries survive page reloads, source edits, and backend session expiration. Open the library to preview, download, or remove them. Storage belongs to this browser and application origin; clearing browser data or changing the host/port changes access to the library. LLM connection credentials are not part of saved items.
+
+Downloads are available without saving to the library: explanations as Markdown, test cases and their source snapshot as JSON, and runnable test code as `.py`, `.test.js`, or `.test.ts`. Downloaded tests import `source_target`; save the corresponding original source beside them as `source_target.py`, `source_target.js`, or `source_target.ts` when using your own test environment. Within the app, execution continues to use the isolated Docker runner.
+
 ## Isolated execution
 
 Build the runner image from the project root:
@@ -106,6 +116,17 @@ RUN_SANDBOX_TESTS=1 .venv/bin/python -m pytest -q
 
 cd ../frontend
 npm run build
+node --test tests/api-routing.test.mjs
+```
+
+Simulation and saved-library verification: **102 backend tests passed** (five optional Docker integration checks skipped), and the production build passed. Headless Chrome checks covered function and full-flow predictions, saved explanations and test cases, reload persistence, downloads, source invalidation, and mobile layout. Model responses and Docker reports were mocked for these workflow checks; no live provider generation was performed.
+
+The navigation regression in `frontend/tests/background-learning.mjs` verifies ongoing work across function and variable selection, concurrent explanations, full-flow results, target-specific failures, and cancellation after source replacement. It uses mocked model and Docker responses through real HTTP connections. To run from the repository root, use an installed Playwright module and Chromium browser:
+
+```bash
+CODEDEBUNKER_PLAYWRIGHT=/absolute/path/to/playwright/index.mjs \
+CODEDEBUNKER_CHROME=/absolute/path/to/chrome \
+node frontend/tests/background-learning.mjs
 ```
 
 Desktop-launcher verification: **82 combined tests passed**, including 24 launcher unit checks, three real startup/lifecycle checks, and the 55 backend/sandbox checks. The installed desktop entry also passes `desktop-file-validate`.

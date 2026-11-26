@@ -153,7 +153,7 @@ def test_missing_python_packages_trigger_installation(workspace, monkeypatch):
 
 
 def test_already_running_instance_is_reused_without_setup(workspace, monkeypatch):
-    record = {'port': 8123, 'token': 'a' * 32}
+    record = {'port': 8123, 'token': 'a' * 32, 'backend_source': launcher.backend_source_digest()}
     monkeypatch.setattr(launcher, 'instance_state', lambda: record)
     monkeypatch.setattr(launcher, 'control', lambda record, **kwargs: True)
     monkeypatch.setattr(launcher.subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('No new process needed'))
@@ -161,6 +161,80 @@ def test_already_running_instance_is_reused_without_setup(workspace, monkeypatch
     monkeypatch.setattr(launcher.webbrowser, 'open', browser)
     assert launcher.start() == 'http://127.0.0.1:8123'
     browser.assert_called_once_with('http://127.0.0.1:8123', new=2)
+
+
+def test_backend_source_fingerprint_tracks_code_and_dependencies_only(workspace):
+    app = workspace / 'backend/app'
+    app.mkdir(parents=True)
+    source = app / 'main.py'
+    source.write_text('version = 1')
+    before = launcher.backend_source_digest()
+    (workspace / 'frontend').mkdir()
+    (workspace / 'frontend/App.tsx').write_text('interface')
+    (launcher.RUNTIME / 'llm-settings.json').write_text('{}')
+    assert launcher.backend_source_digest() == before
+    source.write_text('version = 2')
+    changed = launcher.backend_source_digest()
+    assert changed != before
+    requirements = workspace / 'backend/requirements.txt'
+    requirements.write_text('new dependencies')
+    assert launcher.backend_source_digest() != changed
+
+
+@pytest.mark.parametrize('fingerprint', [None, 'old-source'])
+def test_outdated_running_instance_is_restarted(workspace, monkeypatch, fingerprint):
+    old = {'port': 8123, 'token': 'a' * 32}
+    if fingerprint:
+        old['backend_source'] = fingerprint
+    fresh = {'port': 8123, 'token': 'b' * 32, 'backend_source': launcher.backend_source_digest()}
+    current = [old]
+    controls = []
+
+    def control(record, *, stop=False):
+        controls.append((record, stop))
+        return True
+
+    def spawn(*args, **kwargs):
+        current[0] = fresh
+        return Mock()
+
+    monkeypatch.setattr(launcher, 'instance_state', lambda: current[0])
+    monkeypatch.setattr(launcher, 'control', control)
+    monkeypatch.setattr(launcher, 'supervisor_running', lambda: False)
+    monkeypatch.setattr(launcher.subprocess, 'Popen', spawn)
+    assert launcher.start(browser=False, ui=False) == 'http://127.0.0.1:8123'
+    assert controls == [(old, False), (old, True), (fresh, False)]
+
+
+def test_failed_authenticated_restart_does_not_launch_another_server(workspace, monkeypatch):
+    old = {'port': 8123, 'token': 'a' * 32}
+    monkeypatch.setattr(launcher, 'instance_state', lambda: old)
+    monkeypatch.setattr(launcher, 'control', lambda record, *, stop=False: not stop)
+    monkeypatch.setattr(launcher.subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('The old server is still running'))
+    with pytest.raises(launcher.LaunchError, match='did not respond|could not|reopen'):
+        launcher.start(browser=False, ui=False)
+
+
+def test_unverified_instance_is_not_stopped_during_start(workspace, monkeypatch):
+    old = {'port': 8123, 'token': 'a' * 32}
+    fresh = {'port': 8124, 'token': 'b' * 32, 'backend_source': launcher.backend_source_digest()}
+    current = [old]
+    controls = []
+
+    def control(record, *, stop=False):
+        controls.append((record, stop))
+        return record == fresh
+
+    def spawn(*args, **kwargs):
+        current[0] = fresh
+        return Mock()
+
+    monkeypatch.setattr(launcher, 'instance_state', lambda: current[0])
+    monkeypatch.setattr(launcher, 'control', control)
+    monkeypatch.setattr(launcher, 'supervisor_running', lambda: False)
+    monkeypatch.setattr(launcher.subprocess, 'Popen', spawn)
+    assert launcher.start(browser=False, ui=False) == 'http://127.0.0.1:8124'
+    assert controls == [(old, False), (fresh, False)]
 
 
 def test_control_uses_loopback_and_authentication(workspace, monkeypatch):
