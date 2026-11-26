@@ -10,13 +10,17 @@ import time
 from typing import Any, Literal
 import uuid
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from app.debunk.llm import generate_debunk_async, generate_tests_async
+from app.debunk.llm import generate_debunk_async, generate_tests_async, test_connection
+from app.llm_settings import LLMSettings, SettingsUpdate, get_settings, resolve_update, save_settings
 from app.debunk.uml_builder import build_class_diagram, build_dataflow_diagram
 from app.models.ir import IRSlice, ProgramIR
 from app.models.llm import DebunkResponse, GeneratedTestSuite
@@ -89,18 +93,18 @@ def _slice(ir: ProgramIR, symbol_id: str | None) -> IRSlice:
         raise HTTPException(422, str(error)) from error
 
 
-def _require_llm() -> None:
-    if not os.environ.get('OPENAI_API_KEY'):
-        raise HTTPException(503, 'Set OPENAI_API_KEY on the backend to enable explanations and test generation. Structural analysis works without it.')
+def _require_llm(settings: LLMSettings) -> None:
+    if not settings.configured:
+        raise HTTPException(503, 'Open LLM settings to choose a provider, model, and credentials. Structural analysis works without an LLM.')
 
 
-async def _debunk(session: dict[str, Any], ir_slice: IRSlice) -> DebunkResponse:
-    target = ir_slice.target_symbol_id
+async def _debunk(session: dict[str, Any], ir_slice: IRSlice, settings: LLMSettings) -> DebunkResponse:
+    target = (settings.fingerprint, ir_slice.target_symbol_id)
     if target in session['debunks']:
         return session['debunks'][target]
     feedback = None
     for _ in range(2):
-        result = await generate_debunk_async(ir_slice, feedback=feedback)
+        result = await generate_debunk_async(ir_slice, feedback=feedback, settings=settings)
         qa = QAGater.audit_all(
             ir=session['ir'], ir_slice=ir_slice, language_id=result.language_identification,
             feynman_explanation=result.feynman_explanation, annotated_code=result.annotated_code,
@@ -113,13 +117,13 @@ async def _debunk(session: dict[str, Any], ir_slice: IRSlice) -> DebunkResponse:
     raise ValueError('Explanation failed validation after one retry: ' + (feedback or 'unknown error'))
 
 
-async def _tests(session: dict[str, Any], ir_slice: IRSlice) -> GeneratedTestSuite:
-    target = ir_slice.target_symbol_id
+async def _tests(session: dict[str, Any], ir_slice: IRSlice, settings: LLMSettings) -> GeneratedTestSuite:
+    target = (settings.fingerprint, ir_slice.target_symbol_id)
     if target in session['tests']:
         return session['tests'][target]
     feedback = None
     for _ in range(2):
-        result = await generate_tests_async(ir_slice, feedback=feedback)
+        result = await generate_tests_async(ir_slice, feedback=feedback, settings=settings)
         errors = QAGater.validate_tests(ir_slice, result)
         if not errors:
             session['tests'][target] = result
@@ -162,7 +166,8 @@ async def get_slice(analysis_id: str, symbol_id: str | None = Query(None)) -> Sl
 async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
     session = _session(analysis_id)
     ir_slice = _slice(session['ir'], symbol_id)
-    _require_llm()
+    settings = get_settings()
+    _require_llm(settings)
 
     def event(name, data):
         return {'event': name, 'data': json.dumps(data)}
@@ -171,7 +176,7 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
         tasks = []
         try:
             yield event('slice_ready', {'target_symbol_id': ir_slice.target_symbol_id, 'target_name': ir_slice.target_callable.name})
-            tasks = [asyncio.create_task(_debunk(session, ir_slice)), asyncio.create_task(_tests(session, ir_slice))]
+            tasks = [asyncio.create_task(_debunk(session, ir_slice, settings)), asyncio.create_task(_tests(session, ir_slice, settings))]
             # Validate each artifact before publishing it; tests may finish after explanations.
             debunk = await tasks[0]
             for name in ('language_identification', 'feynman_explanation', 'annotated_code',
@@ -184,11 +189,10 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
             yield event('tests', tests.model_dump())
             yield event('qa_result', {'passed': True, 'errors': []})
             yield event('done', {})
-        except ValueError as error:
-            yield event('error', {'message': str(error)})
         except Exception:
-            logger.exception('Generation failed for %s', analysis_id)
-            yield event('error', {'message': 'Generation failed. Check the backend API key, model configuration, and logs.'})
+            # Provider exceptions may contain authorization headers or credential-bearing bodies.
+            logger.warning('Generation failed for %s', analysis_id)
+            yield event('error', {'message': 'Generation failed or failed validation. Open LLM settings to test the provider, model, credentials, and output mode.'})
         finally:
             for task in tasks:
                 if not task.done():
@@ -203,19 +207,18 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
 async def simulate(analysis_id: str, req: SimulateRequest) -> SimulateResponse:
     session = _session(analysis_id)
     ir_slice = _slice(session['ir'], req.target_symbol_id)
+    settings = get_settings()
     runner = DockerSandboxRunner()
     available, reason = await asyncio.to_thread(runner.availability)
     if not available:
         raise HTTPException(503, reason)
-    if ir_slice.target_symbol_id not in session['tests']:
-        _require_llm()
+    if (settings.fingerprint, ir_slice.target_symbol_id) not in session['tests']:
+        _require_llm(settings)
     try:
-        tests = await _tests(session, ir_slice)
-    except ValueError as error:
-        raise HTTPException(422, str(error)) from error
+        tests = await _tests(session, ir_slice, settings)
     except Exception as error:
-        logger.exception('Test generation failed')
-        raise HTTPException(502, 'Test generation failed. Check API key and model configuration.') from error
+        logger.warning('Test generation failed')
+        raise HTTPException(502, 'Test generation failed or failed validation. Open LLM settings and test the connection.') from error
     execution = await asyncio.to_thread(runner.run_tests, source_code=session['code'],
                                        test_code=tests.test_code, language=ir_slice.primary_language)
     return SimulateResponse(analysis_id=analysis_id, target_symbol_id=ir_slice.target_symbol_id,
@@ -226,8 +229,59 @@ async def simulate(analysis_id: str, req: SimulateRequest) -> SimulateResponse:
 async def capabilities():
     available, reason = await asyncio.to_thread(DockerSandboxRunner().availability)
     return {'languages': ['python', 'javascript', 'typescript'],
-            'llm_configured': bool(os.environ.get('OPENAI_API_KEY')), 'sandbox_available': available,
+            'llm_configured': get_settings().configured, 'sandbox_available': available,
             'sandbox_message': reason, 'max_source_bytes': 200_000}
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(request: Request, error: RequestValidationError):
+    if request.url.path.startswith('/api/llm-settings'):
+        # Pydantic normally echoes invalid inputs, which can include credentials.
+        return JSONResponse(status_code=422, content={'detail': [
+            {'loc': list(item['loc']), 'msg': item['msg'], 'type': item['type']}
+            for item in error.errors()
+        ]})
+    return await request_validation_exception_handler(request, error)
+
+
+@app.get('/api/llm-settings')
+async def llm_settings(request: Request):
+    _check_settings_origin(request)
+    return get_settings().public_dict()
+
+
+def _check_settings_origin(request: Request) -> None:
+    origin = request.headers.get('origin')
+    allowed = os.environ.get('CORS_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',')
+    if (request.headers.get('sec-fetch-site') == 'cross-site'
+            or (origin and origin not in [str(request.base_url).rstrip('/'), *allowed])):
+        raise HTTPException(403, 'Settings can only be accessed from the application.')
+
+
+@app.post('/api/llm-settings')
+async def update_llm_settings(request: Request, update: SettingsUpdate):
+    _check_settings_origin(request)
+    settings = resolve_update(update)
+    if not settings.configured:
+        raise HTTPException(422, 'Enter an API key for the selected provider.')
+    try:
+        save_settings(settings)
+    except OSError:
+        raise HTTPException(500, 'Could not save LLM settings. Check local configuration directory permissions.') from None
+    return settings.public_dict()
+
+
+@app.post('/api/llm-settings/test')
+async def check_llm_connection(request: Request, update: SettingsUpdate):
+    _check_settings_origin(request)
+    settings = resolve_update(update)
+    if not settings.configured:
+        raise HTTPException(422, 'Enter an API key for the selected provider.')
+    try:
+        await asyncio.wait_for(test_connection(settings), timeout=30)
+    except Exception:
+        raise HTTPException(502, 'Connection or structured-output check failed. Check the endpoint, model, credentials, and output mode. Ensure a local model server is running.') from None
+    return {'ok': True, 'message': 'Connected. The model returned valid structured output.'}
 
 
 @app.get('/health')

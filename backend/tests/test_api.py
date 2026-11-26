@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app import main as api
+from app import llm_settings
 from app.models.llm import DebunkResponse, GeneratedTestSuite, PrerequisiteConcept
 from app.sandbox.runner import SandboxExecutionResult
 
@@ -37,8 +38,9 @@ def suite():
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     api._sessions.clear()
+    monkeypatch.setattr(llm_settings, 'SETTINGS_PATH', tmp_path / 'llm-settings.json')
     monkeypatch.delenv('OPENAI_API_KEY', raising=False)
     with TestClient(api.app) as test_client:
         yield test_client
@@ -94,7 +96,7 @@ def test_missing_key_rejected_before_stream_opens(client):
     result = analyze(client)
     response = client.get(f"/api/stream/{result['analysis_id']}")
     assert response.status_code == 503
-    assert 'OPENAI_API_KEY' in response.json()['detail']
+    assert 'LLM settings' in response.json()['detail']
 
 
 def test_missing_and_expired_sessions(client, monkeypatch):
@@ -117,11 +119,11 @@ def test_stream_retries_invalid_annotation_before_emitting(client, monkeypatch):
     monkeypatch.setenv('OPENAI_API_KEY', 'test-key-not-real')
     attempts = []
 
-    async def generate(ir_slice, feedback=None):
+    async def generate(ir_slice, feedback=None, settings=None):
         attempts.append(feedback)
         return debunk(ANNOTATED.replace('return value * 2', 'return value * 3')) if len(attempts) == 1 else debunk()
 
-    async def generate_tests(ir_slice, feedback=None):
+    async def generate_tests(ir_slice, feedback=None, settings=None):
         return suite()
 
     monkeypatch.setattr(api, 'generate_debunk_async', generate)
@@ -141,11 +143,11 @@ def test_failed_validation_is_withheld_after_one_retry(client, monkeypatch):
     monkeypatch.setenv('OPENAI_API_KEY', 'test-key-not-real')
     attempts = []
 
-    async def invalid(ir_slice, feedback=None):
+    async def invalid(ir_slice, feedback=None, settings=None):
         attempts.append(feedback)
         return debunk('def adjacent():\n    return 1\n')
 
-    async def generate_tests(ir_slice, feedback=None):
+    async def generate_tests(ir_slice, feedback=None, settings=None):
         return suite()
 
     monkeypatch.setattr(api, 'generate_debunk_async', invalid)
@@ -161,7 +163,7 @@ def test_failed_validation_is_withheld_after_one_retry(client, monkeypatch):
 def test_simulation_uses_selected_target_and_cached_validated_suite(client, monkeypatch):
     result = analyze(client)
     target = result['entry_point_symbol_id']
-    api._sessions[result['analysis_id']]['tests'][target] = suite()
+    api._sessions[result['analysis_id']]['tests'][(llm_settings.get_settings().fingerprint, target)] = suite()
     monkeypatch.setattr(api.DockerSandboxRunner, 'availability', lambda self: (True, 'ready'))
     calls = []
 

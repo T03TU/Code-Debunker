@@ -53,11 +53,23 @@ Then run:
 
 Open **http://127.0.0.1:5173**. The frontend proxies `/api` requests to the backend on port 8000. API documentation is at **http://127.0.0.1:8000/docs**. Stop both development services with Ctrl+C. The developer script uses polling to handle systems with exhausted file watchers.
 
+Open **Settings** using the gear button in the header. **Appearance** offers dark, light, or system color themes, five accent colors, text styles and sizes, and fine, regular, or bold icons. Changes apply immediately throughout the workspace, including the source editor and diagrams, and persist in this browser. **Reset appearance** restores the original theme.
+
 ## Explanations and generated tests
 
-Copy `backend/.env.example` to `backend/.env` and set `OPENAI_API_KEY`. `OPENAI_MODEL` defaults to `gpt-4o` and can be changed to a model compatible with the existing Instructor/OpenAI integration. The desktop launcher and developer script load this file; for manual startup, pass `--env-file .env` to Uvicorn. After configuration changes, stop CodeDebunker and open it again. Credentials stay on the backend.
+Open **Settings → LLM configuration** in the header to connect a model. The dialog opens automatically when no connection is configured; dismiss it to continue structural analysis. Choose a provider, enter the exact model ID (or Azure deployment name), and supply its credentials and endpoint where needed. **Test connection** makes a small request to check authentication and structured output; it may use provider credits. **Save settings** applies the configuration immediately, without restarting the app.
 
-**Explain function** sends the selected callable's source and immediate dependency context to the configured OpenAI model. It generates language identification, a Feynman explanation, annotated code, an illustrative execution walkthrough, prerequisite concepts, and tests. It never sends the entire source file to the model. Structural validation runs before each generated artifact is emitted; one corrective retry receives the validation errors. The annotated target must preserve its executable tokens. These checks do not prove semantic correctness; use the actual test results to evaluate behavior.
+The dialog includes OpenAI, Anthropic, Google Gemini, Azure OpenAI, Amazon Bedrock, Google Cloud Vertex AI, OpenRouter, Ollama, and LM Studio. **Other OpenAI-compatible service** supports endpoints such as vLLM, llama.cpp, and private gateways. **Other provider (LiteLLM)** accepts `provider/model` identifiers for additional [LiteLLM-supported providers](https://docs.litellm.ai/docs/providers). Model names are editable rather than restricted to a fixed catalog. The model must support tool calling or JSON output; choose the appropriate **Structured output** mode and test it.
+
+For local models, start your model server and load or install the model first. Ollama defaults to `http://127.0.0.1:11434` (server root, without `/v1`); LM Studio defaults to `http://127.0.0.1:1234/v1`. No API key is required for an unauthenticated local server. Addresses are resolved from the backend machine; when the backend runs in a container or on another machine, enter an address it can reach.
+
+Azure requires its resource endpoint and API version. Bedrock accepts an API key or AWS access key, secret, optional session token, and region. Vertex accepts project, location, and service account JSON. Bedrock and Vertex can also use an existing backend cloud identity when explicit credentials are omitted. Provider-side account access and model permissions are still required.
+
+Settings are saved in `.runtime/llm-settings.json`, a file readable and writable only by your OS user (mode `0600`), excluded from source control. Credentials are stored locally in this file as plain text, never returned by the settings API or saved in browser storage. Leaving a credential field blank keeps its saved value for the same service. Changing provider, endpoint, or cloud account requires entering credentials again. Use **Forget existing credentials** to remove saved values while saving replacements or an anonymous local connection. Configuration changes separate the generation cache, so later requests use the selected model.
+
+Existing `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o`), and optional `OPENAI_BASE_URL` environment variables remain supported until settings are saved through the dialog. The desktop launcher and developer script load `backend/.env`; manual Uvicorn startup can use `--env-file .env`. Saved dialog settings take precedence. Deleting `.runtime/llm-settings.json` restores environment-based defaults.
+
+**Explain function** sends the selected callable's source and immediate dependency context to the configured model. It generates language identification, a Feynman explanation, annotated code, an illustrative execution walkthrough, prerequisite concepts, and tests. It never sends the entire source file to the model. Structural validation runs before each generated artifact is emitted; one corrective retry receives the validation errors. The annotated target must preserve its executable tokens. These checks do not prove semantic correctness; use the actual test results to evaluate behavior.
 
 ## Isolated execution
 
@@ -110,11 +122,11 @@ Build before starting the backend. FastAPI serves `frontend/dist` at **http://12
 
 ## Project state and remaining work
 
-The Antigravity handoff contained a working parser/model foundation and eight passing tests, API and sandbox scaffolding, and an incomplete frontend with a missing `App` component. `.agents` was empty; the actual rules and specialist instructions were in `.agent`. The continued implementation adds the workbench and closes critical API, graph, validation, and sandbox integration gaps.
+The Antigravity handoff contained a working parser/model foundation and eight passing tests, API and sandbox scaffolding, and an incomplete frontend with a missing `App` component. The continued implementation adds the workbench and closes critical API, graph, validation, and sandbox integration gaps.
 
 The current milestone supports **single source files and snippets**, up to 200 KB. It is a local workbench, with in-memory sessions that expire after an hour and a 100-session limit. Sessions disappear when the backend restarts; use one backend worker. It has no authentication and is not prepared for public deployment.
 
-Further work toward the broader vision in `GEMINI.md`:
+Further planned work:
 
 - Multi-file and repository ingestion, cross-file symbol resolution, and file-aware diagram navigation.
 - Go and Java extractors. Their grammars are present, but unsupported extraction now returns an explicit error instead of silently using the Python extractor.
@@ -122,5 +134,3 @@ Further work toward the broader vision in `GEMINI.md`:
 - Broader documentation audits for nested return keys, tuple elements, and exceptions; the current gate checks the target, syntax, unchanged executable tokens, parameter/default documentation, returns sections, and prerequisite count.
 - Repairing test harness failures after execution. Currently invalid syntax gets one generation retry, while actual runtime failures are reported without changing submitted source. Unexported JavaScript functions and unavailable internal imports may require additional harness support.
 - Persistent sessions, authentication, concurrency controls, smaller editor/layout bundles, and a separate execution service before deployment beyond a trusted local machine.
-
-See `GEMINI.md` for architectural invariants and `.agent/` for the original workflow instructions.

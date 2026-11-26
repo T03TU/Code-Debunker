@@ -8,6 +8,7 @@ import "monaco-editor/language/typescript/monaco.contribution.js";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import TypeScriptWorker from "monaco-editor/language/typescript/ts.worker.js?worker";
 import type { SourceSpan } from "@/types/api";
+import { textSizes, useTheme } from "@/lib/theme";
 
 self.MonacoEnvironment = {
   getWorker: (_id: string, label: string) =>
@@ -32,6 +33,7 @@ export default function CodeEditor({
   span,
   onLineSelect,
 }: Props) {
+  const { preferences, resolvedMode } = useTheme();
   const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const decorations = useRef<monaco.editor.IEditorDecorationsCollection | null>(
     null,
@@ -77,12 +79,12 @@ export default function CodeEditor({
     <Editor
       value={code}
       language={language}
-      theme="vs-dark"
+      theme={resolvedMode === "dark" ? "vs-dark" : "vs"}
       onMount={mounted}
       onChange={(value) => onChange(value ?? "")}
       loading={<div className="empty-state">Loading source editor…</div>}
       options={{
-        fontSize: 14,
+        fontSize: textSizes[preferences.textSize] - 2,
         fontFamily: "'JetBrains Mono', Consolas, monospace",
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
