@@ -17,9 +17,12 @@ import {
   GitBranch,
   Layers,
   LoaderCircle,
+  Maximize,
+  Minimize,
   Play,
   RefreshCw,
   ShieldCheck,
+  Settings as SettingsIcon,
   Sparkles,
   Upload,
   X,
@@ -33,6 +36,7 @@ import {
   type Capabilities,
 } from "@/lib/api";
 import { samples } from "@/lib/samples";
+import Settings from "@/components/Settings";
 import type {
   AnalyzeResponse,
   DebunkSections,
@@ -69,6 +73,7 @@ export default function App() {
   const [sliceLoading, setSliceLoading] = useState(false);
   const [tab, setTab] = useState<Tab>("structure");
   const [view, setView] = useState<"class" | "dataflow">("class");
+  const [diagramFullscreen, setDiagramFullscreen] = useState(false);
   const [inventory, setInventory] = useState<
     "functions" | "variables" | "imports"
   >("functions");
@@ -83,15 +88,26 @@ export default function App() {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [help, setHelp] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<"appearance" | "llm">(
+    "appearance",
+  );
+  const promptedForLLM = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
+  const diagramWorkspace = useRef<HTMLDivElement>(null);
   const stream = useRef<EventSource | null>(null);
   const sourceRevision = useRef(0);
   const jobRevision = useRef(0);
 
   async function refreshCapabilities() {
     try {
-      setCapabilities(await getCapabilities());
+      const result = await getCapabilities();
+      setCapabilities(result);
       setApiOnline(true);
+      if (!promptedForLLM.current) {
+        promptedForLLM.current = true;
+        if (!result.llm_configured) openSettings("llm");
+      }
     } catch {
       setApiOnline(false);
       setCapabilities(null);
@@ -101,6 +117,32 @@ export default function App() {
     void refreshCapabilities();
     return () => stream.current?.close();
   }, []);
+
+  useEffect(() => {
+    function syncFullscreen() {
+      setDiagramFullscreen(
+        document.fullscreenElement !== null &&
+          document.fullscreenElement === diagramWorkspace.current,
+      );
+    }
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () =>
+      document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  async function toggleDiagramFullscreen() {
+    const workspace = diagramWorkspace.current;
+    if (!workspace) return;
+    try {
+      if (document.fullscreenElement === workspace) {
+        await document.exitFullscreen();
+      } else {
+        await workspace.requestFullscreen();
+      }
+    } catch {
+      setError("Unable to change fullscreen mode. Please try again.");
+    }
+  }
 
   function resetLearning() {
     jobRevision.current++;
@@ -112,6 +154,10 @@ export default function App() {
     setSuite(null);
     setQa(null);
     setExecution(null);
+  }
+  function openSettings(section: "appearance" | "llm") {
+    setSettingsSection(section);
+    setSettingsOpen(true);
   }
   function invalidate() {
     sourceRevision.current++;
@@ -248,6 +294,10 @@ export default function App() {
 
   function explain() {
     if (!analysis || !selected || generating) return;
+    if (!capabilities?.llm_configured) {
+      openSettings("llm");
+      return;
+    }
     resetLearning();
     setGenerating(true);
     setError(null);
@@ -282,6 +332,10 @@ export default function App() {
 
   async function runSimulation() {
     if (!analysis || !selected || simulating) return;
+    if (!capabilities?.llm_configured && !suite) {
+      openSettings("llm");
+      return;
+    }
     setSimulating(true);
     setError(null);
     setTab("tests");
@@ -333,15 +387,37 @@ export default function App() {
             Read it. Trace it. Understand it.
           </span>
         </div>
-        <button
-          className="icon-button"
-          onClick={() => setHelp(!help)}
-          aria-label="Show getting started guide"
-          aria-expanded={help}
-        >
-          <CircleHelp size={20} />
-        </button>
+        <div className="header-actions">
+          <button
+            className="icon-button"
+            onClick={() => openSettings("appearance")}
+            aria-label="Open settings"
+            title="Settings"
+          >
+            <SettingsIcon size={20} />
+          </button>
+          <button
+            className="icon-button"
+            onClick={() => setHelp(!help)}
+            aria-label="Show getting started guide"
+            aria-expanded={help}
+          >
+            <CircleHelp size={20} />
+          </button>
+        </div>
       </header>
+      {settingsOpen && (
+        <Settings
+          initialSection={settingsSection}
+          onClose={() => setSettingsOpen(false)}
+          onLLMSaved={() => {
+            resetLearning();
+            setError(null);
+            setSettingsOpen(false);
+            void refreshCapabilities();
+          }}
+        />
+      )}
       {help && (
         <aside className="help-panel">
           <button
@@ -361,9 +437,9 @@ export default function App() {
           <p>
             <strong>Explain function</strong> creates a five-part learning guide
             and tests. <strong>Run tests</strong> executes generated tests
-            inside an isolated Docker container. These features require a
-            configured backend API key; test execution also requires the runner
-            image.
+            inside an isolated Docker container. These features require a model
+            connection in Settings → LLM configuration; test execution also
+            requires the runner image.
           </p>
           <p>
             Use Ctrl/Cmd + Enter in the editor to analyze. Editing your source
@@ -399,10 +475,14 @@ export default function App() {
                   : "API offline"}
               <RefreshCw size={12} />
             </button>
-            <span>
+            <button
+              className="connection"
+              onClick={() => openSettings("llm")}
+              aria-haspopup="dialog"
+            >
               <Sparkles size={13} />
-              {aiReady ? "Explanations enabled" : "Explanations need API key"}
-            </span>
+              {aiReady ? "Explanations enabled" : "Connect an LLM"}
+            </button>
             <span>
               <ShieldCheck size={13} />
               {sandboxReady ? "Sandbox ready" : "Sandbox unavailable"}
@@ -730,95 +810,122 @@ export default function App() {
             ))}
             {tab === "structure" && (
               <>
-                <div className="diagram-toolbar">
-                  <div className="segmented" aria-label="Diagram view">
-                    <button
-                      aria-pressed={view === "class"}
-                      className={view === "class" ? "active" : ""}
-                      onClick={() => setView("class")}
-                    >
-                      Class & component
-                    </button>
-                    <button
-                      aria-pressed={view === "dataflow"}
-                      className={view === "dataflow" ? "active" : ""}
-                      onClick={() => setView("dataflow")}
-                    >
-                      Data flow
-                    </button>
-                  </div>
-                  <span className="graph-count">
-                    {diagram
-                      ? `${diagram.nodes.length} nodes · ${diagram.edges.length} edges`
-                      : ""}
-                  </span>
-                </div>
-                <div className="diagram-container">
-                  {analysis && diagram?.nodes.length ? (
-                    <Suspense
-                      fallback={
-                        <div className="empty-state">Loading diagram…</div>
-                      }
-                    >
-                      <Diagram
-                        diagram={diagram}
-                        selectedId={selectedId}
-                        onSelect={selectSymbol}
-                        testStatus={
-                          execution
-                            ? {
-                                symbolId: execution.target_symbol_id,
-                                status: execution.execution.status,
-                              }
-                            : null
-                        }
-                      />
-                    </Suspense>
-                  ) : (
-                    <div className="empty-state">
-                      <span className="empty-icon">
-                        <GitBranch size={32} />
-                      </span>
-                      <h2>
-                        {sliceLoading
-                          ? "Tracing the connections…"
-                          : analysis
-                            ? "No structure in this view"
-                            : "Every function has a story."}
-                      </h2>
-                      <p>
-                        {analysis
-                          ? "Choose a function or switch diagram views to explore your source."
-                          : "Analyze the example or bring your own code. Its functions, classes, and connections will appear here."}
-                      </p>
-                      {!analysis && (
-                        <button
-                          className="button secondary"
-                          onClick={() => void analyze()}
-                          disabled={analyzing}
-                        >
-                          {analyzing ? "Analyzing…" : "Explore the example"}
-                        </button>
-                      )}
+                <div ref={diagramWorkspace} className="diagram-workspace">
+                  <div className="diagram-toolbar">
+                    <div className="segmented" aria-label="Diagram view">
+                      <button
+                        aria-pressed={view === "class"}
+                        className={view === "class" ? "active" : ""}
+                        onClick={() => setView("class")}
+                      >
+                        Class & component
+                      </button>
+                      <button
+                        aria-pressed={view === "dataflow"}
+                        className={view === "dataflow" ? "active" : ""}
+                        onClick={() => setView("dataflow")}
+                      >
+                        Data flow
+                      </button>
                     </div>
-                  )}
-                </div>
-                <div className="diagram-legend">
-                  <span>
-                    <i className="legend-callable" />
-                    Function
-                  </span>
-                  <span>
-                    <i className="legend-container" />
-                    Class
-                  </span>
-                  <span>
-                    <i className="legend-dependency" />
-                    Dependency
-                  </span>
-                  <span className="legend-hint">
-                    Click any element to locate its source
-                  </span>
+                    <div className="diagram-actions">
+                      <span className="graph-count">
+                        {diagram
+                          ? `${diagram.nodes.length} nodes · ${diagram.edges.length} edges`
+                          : ""}
+                      </span>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        title={
+                          diagramFullscreen
+                            ? "Exit fullscreen (Esc)"
+                            : "View diagram fullscreen"
+                        }
+                        aria-label={
+                          diagramFullscreen
+                            ? "Exit diagram fullscreen"
+                            : "View diagram fullscreen"
+                        }
+                        aria-pressed={diagramFullscreen}
+                        disabled={!diagram?.nodes.length && !diagramFullscreen}
+                        onClick={() => void toggleDiagramFullscreen()}
+                      >
+                        {diagramFullscreen ? (
+                          <Minimize size={18} />
+                        ) : (
+                          <Maximize size={18} />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="diagram-container">
+                    {analysis && diagram?.nodes.length ? (
+                      <Suspense
+                        fallback={
+                          <div className="empty-state">Loading diagram…</div>
+                        }
+                      >
+                        <Diagram
+                          diagram={diagram}
+                          selectedId={selectedId}
+                          onSelect={selectSymbol}
+                          testStatus={
+                            execution
+                              ? {
+                                  symbolId: execution.target_symbol_id,
+                                  status: execution.execution.status,
+                                }
+                              : null
+                          }
+                        />
+                      </Suspense>
+                    ) : (
+                      <div className="empty-state">
+                        <span className="empty-icon">
+                          <GitBranch size={32} />
+                        </span>
+                        <h2>
+                          {sliceLoading
+                            ? "Tracing the connections…"
+                            : analysis
+                              ? "No structure in this view"
+                              : "Every function has a story."}
+                        </h2>
+                        <p>
+                          {analysis
+                            ? "Choose a function or switch diagram views to explore your source."
+                            : "Analyze the example or bring your own code. Its functions, classes, and connections will appear here."}
+                        </p>
+                        {!analysis && (
+                          <button
+                            className="button secondary"
+                            onClick={() => void analyze()}
+                            disabled={analyzing}
+                          >
+                            {analyzing ? "Analyzing…" : "Explore the example"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="diagram-legend">
+                    <span>
+                      <i className="legend-callable" />
+                      Function
+                    </span>
+                    <span>
+                      <i className="legend-container" />
+                      Class
+                    </span>
+                    <span>
+                      <i className="legend-dependency" />
+                      Dependency
+                    </span>
+                    <span className="legend-hint">
+                      Click any element to locate its source
+                    </span>
+                  </div>
                 </div>
                 <div className="focus-summary">
                   <div>
@@ -859,7 +966,7 @@ export default function App() {
                   </div>
                   <button
                     className="button primary"
-                    disabled={!selected || !aiReady || busy || analyzing}
+                    disabled={!selected || busy || analyzing}
                     onClick={explain}
                   >
                     {generating ? (
@@ -876,8 +983,14 @@ export default function App() {
                 </div>
                 {!aiReady && (
                   <div className="notice">
-                    Configure OPENAI_API_KEY on the backend to generate
-                    explanations. You can explore structure without a key.
+                    <button
+                      className="inline-link"
+                      onClick={() => openSettings("llm")}
+                    >
+                      Connect an LLM
+                    </button>{" "}
+                    to generate explanations. Structural analysis is available
+                    without one.
                   </div>
                 )}
                 {generating && (
@@ -961,13 +1074,7 @@ export default function App() {
                   </div>
                   <button
                     className="button primary"
-                    disabled={
-                      !selected ||
-                      !sandboxReady ||
-                      (!aiReady && !suite) ||
-                      busy ||
-                      analyzing
-                    }
+                    disabled={!selected || !sandboxReady || busy || analyzing}
                     onClick={() => void runSimulation()}
                   >
                     {simulating ? (
@@ -993,7 +1100,13 @@ export default function App() {
                 )}
                 {!aiReady && !suite && (
                   <div className="notice">
-                    An API key is needed to generate the test suite.
+                    <button
+                      className="inline-link"
+                      onClick={() => openSettings("llm")}
+                    >
+                      Connect an LLM
+                    </button>{" "}
+                    to generate the test suite.
                   </div>
                 )}
                 {simulating && (

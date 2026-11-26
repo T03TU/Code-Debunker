@@ -19,7 +19,7 @@ class DebunkResponse(BaseModel):
         ..., description="Jargon-free real-world analogy explaining intent and control flow (Section 2)"
     )
     annotated_code: str = Field(
-        ..., description="Complete runnable code with Google-style docstring and inline comments (Section 3)"
+        ..., description="Exact original selected callable with a mandatory function docstring or JSDoc and inline comments inserted. Never refactor or change executable lines (Section 3)."
     )
     simulated_walkthrough: str = Field(
         ..., description="Concrete sample input, step-by-step state trace, and final output (Section 4)"
