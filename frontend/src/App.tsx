@@ -17,6 +17,8 @@ import {
   GitBranch,
   Layers,
   LoaderCircle,
+  Maximize,
+  Minimize,
   Play,
   RefreshCw,
   Settings2,
@@ -72,6 +74,7 @@ export default function App() {
   const [sliceLoading, setSliceLoading] = useState(false);
   const [tab, setTab] = useState<Tab>("structure");
   const [view, setView] = useState<"class" | "dataflow">("class");
+  const [diagramFullscreen, setDiagramFullscreen] = useState(false);
   const [inventory, setInventory] = useState<
     "functions" | "variables" | "imports"
   >("functions");
@@ -92,6 +95,7 @@ export default function App() {
   );
   const promptedForLLM = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
+  const diagramWorkspace = useRef<HTMLDivElement>(null);
   const stream = useRef<EventSource | null>(null);
   const sourceRevision = useRef(0);
   const jobRevision = useRef(0);
@@ -114,6 +118,32 @@ export default function App() {
     void refreshCapabilities();
     return () => stream.current?.close();
   }, []);
+
+  useEffect(() => {
+    function syncFullscreen() {
+      setDiagramFullscreen(
+        document.fullscreenElement !== null &&
+          document.fullscreenElement === diagramWorkspace.current,
+      );
+    }
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () =>
+      document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  async function toggleDiagramFullscreen() {
+    const workspace = diagramWorkspace.current;
+    if (!workspace) return;
+    try {
+      if (document.fullscreenElement === workspace) {
+        await document.exitFullscreen();
+      } else {
+        await workspace.requestFullscreen();
+      }
+    } catch {
+      setError("Unable to change fullscreen mode. Please try again.");
+    }
+  }
 
   function resetLearning() {
     jobRevision.current++;
@@ -781,95 +811,122 @@ export default function App() {
             ))}
             {tab === "structure" && (
               <>
-                <div className="diagram-toolbar">
-                  <div className="segmented" aria-label="Diagram view">
-                    <button
-                      aria-pressed={view === "class"}
-                      className={view === "class" ? "active" : ""}
-                      onClick={() => setView("class")}
-                    >
-                      Class & component
-                    </button>
-                    <button
-                      aria-pressed={view === "dataflow"}
-                      className={view === "dataflow" ? "active" : ""}
-                      onClick={() => setView("dataflow")}
-                    >
-                      Data flow
-                    </button>
-                  </div>
-                  <span className="graph-count">
-                    {diagram
-                      ? `${diagram.nodes.length} nodes · ${diagram.edges.length} edges`
-                      : ""}
-                  </span>
-                </div>
-                <div className="diagram-container">
-                  {analysis && diagram?.nodes.length ? (
-                    <Suspense
-                      fallback={
-                        <div className="empty-state">Loading diagram…</div>
-                      }
-                    >
-                      <Diagram
-                        diagram={diagram}
-                        selectedId={selectedId}
-                        onSelect={selectSymbol}
-                        testStatus={
-                          execution
-                            ? {
-                                symbolId: execution.target_symbol_id,
-                                status: execution.execution.status,
-                              }
-                            : null
-                        }
-                      />
-                    </Suspense>
-                  ) : (
-                    <div className="empty-state">
-                      <span className="empty-icon">
-                        <GitBranch size={32} />
-                      </span>
-                      <h2>
-                        {sliceLoading
-                          ? "Tracing the connections…"
-                          : analysis
-                            ? "No structure in this view"
-                            : "Every function has a story."}
-                      </h2>
-                      <p>
-                        {analysis
-                          ? "Choose a function or switch diagram views to explore your source."
-                          : "Analyze the example or bring your own code. Its functions, classes, and connections will appear here."}
-                      </p>
-                      {!analysis && (
-                        <button
-                          className="button secondary"
-                          onClick={() => void analyze()}
-                          disabled={analyzing}
-                        >
-                          {analyzing ? "Analyzing…" : "Explore the example"}
-                        </button>
-                      )}
+                <div ref={diagramWorkspace} className="diagram-workspace">
+                  <div className="diagram-toolbar">
+                    <div className="segmented" aria-label="Diagram view">
+                      <button
+                        aria-pressed={view === "class"}
+                        className={view === "class" ? "active" : ""}
+                        onClick={() => setView("class")}
+                      >
+                        Class & component
+                      </button>
+                      <button
+                        aria-pressed={view === "dataflow"}
+                        className={view === "dataflow" ? "active" : ""}
+                        onClick={() => setView("dataflow")}
+                      >
+                        Data flow
+                      </button>
                     </div>
-                  )}
-                </div>
-                <div className="diagram-legend">
-                  <span>
-                    <i className="legend-callable" />
-                    Function
-                  </span>
-                  <span>
-                    <i className="legend-container" />
-                    Class
-                  </span>
-                  <span>
-                    <i className="legend-dependency" />
-                    Dependency
-                  </span>
-                  <span className="legend-hint">
-                    Click any element to locate its source
-                  </span>
+                    <div className="diagram-actions">
+                      <span className="graph-count">
+                        {diagram
+                          ? `${diagram.nodes.length} nodes · ${diagram.edges.length} edges`
+                          : ""}
+                      </span>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        title={
+                          diagramFullscreen
+                            ? "Exit fullscreen (Esc)"
+                            : "View diagram fullscreen"
+                        }
+                        aria-label={
+                          diagramFullscreen
+                            ? "Exit diagram fullscreen"
+                            : "View diagram fullscreen"
+                        }
+                        aria-pressed={diagramFullscreen}
+                        disabled={!diagram?.nodes.length && !diagramFullscreen}
+                        onClick={() => void toggleDiagramFullscreen()}
+                      >
+                        {diagramFullscreen ? (
+                          <Minimize size={18} />
+                        ) : (
+                          <Maximize size={18} />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="diagram-container">
+                    {analysis && diagram?.nodes.length ? (
+                      <Suspense
+                        fallback={
+                          <div className="empty-state">Loading diagram…</div>
+                        }
+                      >
+                        <Diagram
+                          diagram={diagram}
+                          selectedId={selectedId}
+                          onSelect={selectSymbol}
+                          testStatus={
+                            execution
+                              ? {
+                                  symbolId: execution.target_symbol_id,
+                                  status: execution.execution.status,
+                                }
+                              : null
+                          }
+                        />
+                      </Suspense>
+                    ) : (
+                      <div className="empty-state">
+                        <span className="empty-icon">
+                          <GitBranch size={32} />
+                        </span>
+                        <h2>
+                          {sliceLoading
+                            ? "Tracing the connections…"
+                            : analysis
+                              ? "No structure in this view"
+                              : "Every function has a story."}
+                        </h2>
+                        <p>
+                          {analysis
+                            ? "Choose a function or switch diagram views to explore your source."
+                            : "Analyze the example or bring your own code. Its functions, classes, and connections will appear here."}
+                        </p>
+                        {!analysis && (
+                          <button
+                            className="button secondary"
+                            onClick={() => void analyze()}
+                            disabled={analyzing}
+                          >
+                            {analyzing ? "Analyzing…" : "Explore the example"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="diagram-legend">
+                    <span>
+                      <i className="legend-callable" />
+                      Function
+                    </span>
+                    <span>
+                      <i className="legend-container" />
+                      Class
+                    </span>
+                    <span>
+                      <i className="legend-dependency" />
+                      Dependency
+                    </span>
+                    <span className="legend-hint">
+                      Click any element to locate its source
+                    </span>
+                  </div>
                 </div>
                 <div className="focus-summary">
                   <div>

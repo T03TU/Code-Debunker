@@ -575,6 +575,19 @@ h1 > span {
   color: var(--subtle);
   font-family: monospace;
 }
+.diagram-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+}
+.diagram-workspace:fullscreen {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+}
 .diagram-toolbar {
   display: flex;
   align-items: center;
@@ -582,6 +595,11 @@ h1 > span {
   padding: 14px 16px;
   justify-content: space-between;
   flex-shrink: 0;
+}
+.diagram-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .segmented {
   display: flex;
