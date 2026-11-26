@@ -71,6 +71,21 @@ def test_unauthorized_stop_is_rejected_and_authorized_stop_cleans_state():
     assert not (PROJECT / '.runtime/instance.json').exists()
 
 
+def test_reopening_outdated_backend_replaces_worker_and_loads_test_route():
+    result = launch('--no-browser')
+    assert result.returncode == 0, result.stderr
+    state_file = PROJECT / '.runtime/instance.json'
+    old = json.loads(state_file.read_text())
+    state_file.write_text(json.dumps({**old, 'backend_source': 'outdated'}))
+    updated = launch('--no-browser')
+    assert updated.returncode == 0, updated.stderr
+    fresh = json.loads(state_file.read_text())
+    assert fresh['token'] != old['token']
+    assert fresh['backend_source'] not in {None, 'outdated'}
+    schema = json.loads(request(updated.stdout.strip().splitlines()[-1], '/openapi.json')[1])
+    assert 'post' in schema['paths']['/api/tests/{analysis_id}']
+
+
 def test_busy_default_port_is_preserved_and_another_port_is_used():
     class OtherApp(BaseHTTPRequestHandler):
         def do_GET(self):

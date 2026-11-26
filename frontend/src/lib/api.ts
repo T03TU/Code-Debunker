@@ -2,6 +2,9 @@ import type {
   AnalyzeResponse,
   IRSlice,
   SimulateResponse,
+  TestScope,
+  TestSuite,
+  TestsResponse,
   UMLDiagram,
 } from "@/types/api";
 
@@ -78,10 +81,19 @@ export interface LLMSettings extends Omit<
   configured: boolean;
   saved_credentials: Record<CredentialField, boolean>;
 }
-export async function getLLMSettings(): Promise<LLMSettings> {
-  return readResponse(
-    await fetch(`${BASE}/llm-settings`, { cache: "no-store" }),
-  );
+export async function getLLMSettings(
+  signal?: AbortSignal,
+): Promise<LLMSettings> {
+  const response = await fetch(`${BASE}/llm-settings`, {
+    cache: "no-store",
+    signal,
+  });
+  if (response.status === 404) {
+    throw new Error(
+      "The running backend does not support LLM settings. Restart CodeDebunker to load the updated backend, then retry.",
+    );
+  }
+  return readResponse(response);
 }
 export async function saveLLMSettings(settings: LLMForm): Promise<LLMSettings> {
   return readResponse(
@@ -130,24 +142,42 @@ export async function getSlice(
 export async function simulate(
   analysisId: string,
   targetSymbolId?: string,
+  scope: TestScope = "function",
+  signal?: AbortSignal,
 ): Promise<SimulateResponse> {
   const res = await fetch(`${BASE}/simulate/${analysisId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target_symbol_id: targetSymbolId ?? null }),
+    body: JSON.stringify({ target_symbol_id: targetSymbolId ?? null, scope }),
+    signal,
   });
   return readResponse(res);
+}
+
+export async function generateTestCases(
+  analysisId: string,
+  targetSymbolId: string | undefined,
+  scope: TestScope,
+  signal?: AbortSignal,
+): Promise<TestsResponse> {
+  const response = await fetch(`${BASE}/tests/${analysisId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_symbol_id: targetSymbolId ?? null, scope }),
+    signal,
+  });
+  if (response.status === 405) {
+    throw new Error(
+      "The running backend does not support test generation. Close and reopen CodeDebunker to load the update, then analyze your source again.",
+    );
+  }
+  return readResponse(response);
 }
 
 export type StreamEvent =
   | { type: "slice_ready"; target_symbol_id: string; target_name: string }
   | { type: "section"; name: string; content: string }
-  | {
-      type: "tests";
-      test_code: string;
-      mock_summary: string;
-      test_case_names: string[];
-    }
+  | ({ type: "tests" } & TestSuite)
   | { type: "qa_result"; passed: boolean; errors: string[] }
   | { type: "done" }
   | { type: "error"; message: string };

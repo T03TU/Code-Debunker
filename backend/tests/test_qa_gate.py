@@ -1,9 +1,9 @@
 import pytest
 
-from app.models.llm import GeneratedTestSuite
 from app.parser.graph_slicer import GraphSlicer
 from app.parser.ir_builder import build_program_ir
 from app.sandbox.qa_gate import QAGater
+from test_api import suite
 
 SOURCE = 'def double(value: int = 2) -> int:\n    return value * 2\n'
 ANNOTATED = '''def double(value: int = 2) -> int:
@@ -53,7 +53,7 @@ def test_javascript_annotation_uses_jsdoc_and_preserves_tokens():
 
 
 def test_tests_must_reference_selected_target_and_fixed_module(ir_slice):
-    suite = GeneratedTestSuite(language='python', framework='pytest', test_code='from source_target import double\n\ndef test_it():\n    assert double(2) == 4\n', mock_summary='none', test_case_names=['test_it'])
-    assert QAGater.validate_tests(ir_slice, suite) == []
-    assert QAGater.validate_tests(ir_slice, suite.model_copy(update={'test_code': 'def test_other():\n    assert True\n'}))
-    assert QAGater.validate_tests(ir_slice, suite.model_copy(update={'framework': 'jest'}))
+    tests = suite()
+    assert QAGater.validate_tests(ir_slice, tests) == []
+    assert QAGater.validate_tests(ir_slice, tests.model_copy(update={'test_code': 'def test_other():\n    assert True\n'}))
+    assert QAGater.validate_tests(ir_slice, tests.model_copy(update={'framework': 'jest'}))

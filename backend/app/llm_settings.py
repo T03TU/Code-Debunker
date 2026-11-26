@@ -105,7 +105,12 @@ class LLMSettings(BaseModel):
         routed_provider = {'lmstudio': 'openai', 'compatible': 'openai', 'ollama': 'ollama_chat'}.get(provider, provider)
         # A model is an opaque provider ID; preserve slashes (e.g. OpenRouter IDs).
         model = self.model if provider == 'custom' else f'{routed_provider}/{self.model}'
-        kwargs: dict = {'model': model, 'timeout': 90, 'num_retries': 0}
+        kwargs: dict = {'model': model, 'timeout': 600 if self.provider in ('ollama', 'lmstudio') else 90,
+                        'num_retries': 0}
+        if provider == 'ollama':
+            # Structured responses need the final answer within the token budget.
+            # LiteLLM maps 'none' to Ollama's think=false. GPT-OSS requires a level.
+            kwargs['reasoning_effort'] = 'low' if self.model.startswith('gpt-oss') else 'none'
         base = self.base_url or {'ollama': 'http://127.0.0.1:11434',
                                  'lmstudio': 'http://127.0.0.1:1234/v1'}.get(provider, '')
         if base:

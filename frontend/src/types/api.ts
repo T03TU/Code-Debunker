@@ -212,7 +212,8 @@ export interface SandboxExecutionResult {
 
 export interface SimulateResponse {
   analysis_id: string;
-  target_symbol_id: string;
+  target_symbol_id: string | null;
+  scope: TestScope;
   test_code: string;
   execution: SandboxExecutionResult;
 }
@@ -232,9 +233,32 @@ export interface DebunkSections {
 }
 
 export interface TestSuite {
+  language: string;
+  framework: string;
   test_code: string;
   mock_summary: string;
   test_case_names: string[];
+  purpose: string;
+  scenarios: SimulatedTestCase[];
+}
+
+export type TestScope = "function" | "flow";
+
+export interface SimulatedTestCase {
+  name: string;
+  category: "happy_path" | "transformation" | "edge_case" | "boundary";
+  input: string;
+  expected_output: string;
+  predicted_output: string;
+  steps: string[];
+  rationale: string;
+}
+
+export interface TestsResponse {
+  analysis_id: string;
+  target_symbol_id: string | null;
+  scope: TestScope;
+  suite: TestSuite;
 }
 
 export interface QAResult {

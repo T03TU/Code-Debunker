@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { LoaderCircle } from "lucide-react";
 import {
   getLLMSettings,
@@ -115,6 +115,9 @@ export default function LLMSettingsForm({
   const [form, setForm] = useState<LLMForm>(blankForm());
   const [saved, setSaved] = useState<LLMSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const edited = useRef(false);
   const [action, setAction] = useState<"test" | "save" | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -144,7 +147,11 @@ export default function LLMSettingsForm({
 
   useEffect(() => {
     let active = true;
-    getLLMSettings()
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    setLoading(true);
+    setLoadError("");
+    getLLMSettings(controller.signal)
       .then((settings) => {
         if (!active) return;
         setSaved(settings);
@@ -153,23 +160,29 @@ export default function LLMSettingsForm({
           saved_credentials: _credentials,
           ...publicSettings
         } = settings;
-        setForm({ ...blankForm(settings.provider), ...publicSettings });
+        if (!edited.current)
+          setForm({ ...blankForm(settings.provider), ...publicSettings });
       })
       .catch((failure: unknown) => {
         if (active)
-          setError(
-            failure instanceof Error
-              ? failure.message
-              : "Could not load LLM settings.",
+          setLoadError(
+            controller.signal.aborted
+              ? "Loading settings timed out. Check that CodeDebunker is running, then retry."
+              : failure instanceof Error
+                ? failure.message
+                : "Could not load LLM settings.",
           );
       })
       .finally(() => {
+        clearTimeout(timeout);
         if (active) setLoading(false);
       });
     return () => {
       active = false;
+      clearTimeout(timeout);
+      controller.abort();
     };
-  }, []);
+  }, [loadAttempt]);
 
   useEffect(() => {
     onBusyChange(action !== null);
@@ -177,6 +190,7 @@ export default function LLMSettingsForm({
   }, [action, onBusyChange]);
 
   function update<K extends keyof LLMForm>(name: K, value: LLMForm[K]) {
+    edited.current = true;
     setForm((previous) => ({ ...previous, [name]: value }));
     setSuccess("");
     setError("");
@@ -254,14 +268,34 @@ export default function LLMSettingsForm({
           <LoaderCircle size={16} className="spin" /> Loading settings…
         </p>
       )}
+      {loadError && (
+        <div
+          className="settings-feedback settings-error settings-load-error"
+          role="alert"
+        >
+          <p>{loadError}</p>
+          <p>
+            You can edit the fields below. Reload existing settings before
+            testing or saving.
+          </p>
+          <button
+            type="button"
+            className="button"
+            onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+          >
+            Retry loading settings
+          </button>
+        </div>
+      )}
       <form onSubmit={(event) => void submit(event)}>
-        <fieldset disabled={pending || !saved}>
+        <fieldset disabled={action !== null}>
           <label className="settings-field">
             <span>Provider</span>
             <select
               aria-label="Provider"
               value={form.provider}
               onChange={(event) => {
+                edited.current = true;
                 setForm(blankForm(event.target.value as LLMProvider));
                 setError("");
                 setSuccess("");
@@ -403,11 +437,21 @@ export default function LLMSettingsForm({
             you choose.
           </p>
           <div className="settings-actions">
-            <button className="button" type="submit" value="test">
+            <button
+              className="button"
+              type="submit"
+              value="test"
+              disabled={pending || !saved}
+            >
               {action === "test" && <LoaderCircle size={15} className="spin" />}
               Test connection
             </button>
-            <button className="button primary" type="submit" value="save">
+            <button
+              className="button primary"
+              type="submit"
+              value="save"
+              disabled={pending || !saved}
+            >
               {action === "save" && <LoaderCircle size={15} className="spin" />}
               Save settings
             </button>

@@ -4,6 +4,7 @@ import json
 import logging
 
 from fastapi.testclient import TestClient
+from instructor.core import InstructorRetryException
 import pytest
 
 from app import llm_settings as config
@@ -11,7 +12,7 @@ from app import main as api
 from app.debunk import llm
 from app.parser.graph_slicer import GraphSlicer
 from app.parser.ir_builder import build_program_ir
-from test_api import ANNOTATED, SOURCE, debunk, suite
+from test_api import ANNOTATED, FLOW_SOURCE, SOURCE, debunk, flow_suite, suite
 
 
 @pytest.fixture
@@ -117,6 +118,19 @@ def test_provider_error_does_not_expose_credentials(client, monkeypatch, caplog)
     assert 'secret-provider-key' not in caplog.text
 
 
+def test_connection_timeout_explains_model_loading_without_exposing_details(client, monkeypatch):
+    async def probe(settings):
+        raise TimeoutError('Authorization: private-provider-key')
+
+    monkeypatch.setattr(api, 'test_connection', probe)
+    response = client.post('/api/llm-settings/test', json={'provider': 'ollama', 'model': 'qwen3.5:4b'})
+    assert response.status_code == 504
+    assert '90 seconds' in response.json()['detail']
+    assert 'loading' in response.json()['detail']
+    assert 'private-provider-key' not in response.text
+    assert not config.SETTINGS_PATH.exists()
+
+
 @pytest.mark.parametrize(('provider', 'model', 'extra', 'routed'), [
     ('openai', 'model', {'api_key': 'key'}, 'openai/model'),
     ('anthropic', 'claude', {'api_key': 'key'}, 'anthropic/claude'),
@@ -139,6 +153,35 @@ def test_provider_routing(provider, model, extra, routed):
     assert settings.configured
 
 
+def test_full_local_generation_has_time_for_cpu_inference():
+    for provider in ('ollama', 'lmstudio'):
+        settings = config.LLMSettings(provider=provider, model='local-model')
+        assert settings.completion_kwargs()['timeout'] == 600
+        assert llm.connection_test_timeout(settings) == 90
+    assert config.LLMSettings(provider='openai').completion_kwargs()['timeout'] == 90
+
+
+def test_generation_context_includes_immediate_dependency_behavior_only():
+    source = '''def checkout(items):
+    return {"total": len(items)}
+
+def unrelated():
+    return "unrelated body must stay outside the slice"
+
+def main():
+    return checkout([1, 2])
+'''
+    ir_slice = GraphSlicer(build_program_ir(source)).extract_1hop_slice('main')
+    context = llm._build_slice_context(ir_slice)
+    assert ir_slice.target_callable.source_excerpt in context
+    assert 'return {"total": len(items)}' in context
+    assert 'unrelated body must stay outside the slice' not in context
+    flow_slice = GraphSlicer(build_program_ir(FLOW_SOURCE)).extract_1hop_slice('main')
+    function_context = llm._build_slice_context(flow_slice)
+    assert 'return double(value) + 1' in function_context
+    assert 'return value * 2' not in function_context
+
+
 def test_connection_probe_validates_real_instructor_output(monkeypatch):
     runtime = llm._provider_runtime()
     calls = []
@@ -154,6 +197,45 @@ def test_connection_probe_validates_real_instructor_output(monkeypatch):
     assert calls[0]['model'] == 'openai/org/local'
     assert calls[0]['api_base'] == settings.base_url
     assert calls[0]['response_format']['type'] == 'json_object'
+    assert 'reasoning_effort' not in calls[0]
+
+
+@pytest.mark.parametrize(('model', 'effort'), [('qwen3.5:4b', 'none'), ('gpt-oss:20b', 'low')])
+def test_ollama_probe_uses_native_schema_and_controls_thinking(monkeypatch, model, effort):
+    runtime = llm._provider_runtime()
+    calls = []
+
+    async def complete(**kwargs):
+        calls.append(kwargs)
+        return runtime.ModelResponse(model=kwargs['model'], choices=[{'message': {
+            'role': 'assistant', 'content': '{"reply":"connected"}'}, 'finish_reason': 'stop'}])
+
+    monkeypatch.setattr(runtime, 'acompletion', complete)
+    settings = config.LLMSettings(provider='ollama', model=model, output_mode='json')
+    asyncio.run(llm.test_connection(settings))
+    call = calls[0]
+    schema = call['response_format']['json_schema']['schema']
+    assert call['response_format']['type'] == 'json_schema'
+    assert schema['properties']['reply']['type'] == 'string'
+    assert 'reply' in schema['required']
+    assert call['reasoning_effort'] == effort
+    assert call['timeout'] > llm.connection_test_timeout(settings)
+    # The schema belongs in Ollama's format field, rather than an extra system prompt.
+    assert len(call['messages']) == 1
+    assert call['messages'][0]['role'] == 'user'
+
+
+def test_ollama_schema_still_rejects_invalid_model_output(monkeypatch):
+    runtime = llm._provider_runtime()
+
+    async def complete(**kwargs):
+        return runtime.ModelResponse(model=kwargs['model'], choices=[{'message': {
+            'role': 'assistant', 'content': '{"wrong_field":"connected"}'}, 'finish_reason': 'stop'}])
+
+    monkeypatch.setattr(runtime, 'acompletion', complete)
+    settings = config.LLMSettings(provider='ollama', model='qwen3.5:4b', output_mode='json')
+    with pytest.raises(InstructorRetryException, match='reply'):
+        asyncio.run(llm.test_connection(settings))
 
 
 def test_debunk_and_tests_use_selected_settings_and_instructor_schema(monkeypatch):
@@ -163,18 +245,32 @@ def test_debunk_and_tests_use_selected_settings_and_instructor_schema(monkeypatc
     async def complete(**kwargs):
         calls.append(kwargs)
         name = kwargs['tools'][0]['function']['name']
-        output = debunk() if name == 'DebunkResponse' else suite()
+        user_prompt = next(item['content'] for item in kwargs['messages'] if item['role'] == 'user')
+        if name == 'DebunkResponse':
+            output = debunk()
+        elif FLOW_SOURCE in user_prompt:
+            output = flow_suite()
+        else:
+            output = suite()
         return runtime.ModelResponse(model=kwargs['model'], choices=[{'message': {'role': 'assistant', 'content': None,
             'tool_calls': [{'id': 'call_1', 'type': 'function', 'function': {'name': name, 'arguments': output.model_dump_json()}}]},
             'finish_reason': 'tool_calls'}])
 
     monkeypatch.setattr(runtime, 'acompletion', complete)
-    ir_slice = GraphSlicer(build_program_ir(SOURCE)).extract_1hop_slice()
+    ir = build_program_ir(FLOW_SOURCE)
+    ir_slice = GraphSlicer(ir).extract_1hop_slice('double')
     settings = config.LLMSettings(provider='anthropic', model='my-model', api_key='my-secret')
     result = asyncio.run(llm.generate_debunk_async(ir_slice, settings=settings))
-    tests = asyncio.run(llm.generate_tests_async(ir_slice, settings=settings))
+    tests = asyncio.run(llm.generate_tests_async(ir_slice, settings=settings, explanation=result))
+    flow_tests = asyncio.run(llm.generate_flow_tests_async(ir, FLOW_SOURCE, explanations=[result], settings=settings))
     assert result.annotated_code == ANNOTATED
-    assert tests.test_code == suite().test_code
+    assert tests.model_dump() == suite().model_dump()
+    assert flow_tests.model_dump() == flow_suite().model_dump()
+    function_prompt, flow_prompt = [next(item['content'] for item in call['messages'] if item['role'] == 'user')
+                                    for call in calls[1:]]
+    assert FLOW_SOURCE in flow_prompt
+    assert 'return add_fee(value)' not in function_prompt
+    assert result.feynman_explanation in function_prompt and result.feynman_explanation in flow_prompt
     assert all(call['model'] == 'anthropic/my-model' and call['api_key'] == 'my-secret' for call in calls)
 
 
@@ -185,7 +281,7 @@ def test_switching_models_regenerates_explanations_and_tests(client, monkeypatch
         calls.append(('debunk', settings.model))
         return debunk()
 
-    async def generate_tests(ir_slice, feedback=None, settings=None):
+    async def generate_tests(ir_slice, feedback=None, settings=None, explanation=None):
         calls.append(('tests', settings.model))
         return suite()
 

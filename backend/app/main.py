@@ -17,9 +17,11 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from openai import APIConnectionError, APITimeoutError, AuthenticationError, PermissionDeniedError
+from instructor.core import InstructorRetryException, IncompleteOutputException
 from sse_starlette.sse import EventSourceResponse
 
-from app.debunk.llm import generate_debunk_async, generate_tests_async, test_connection
+from app.debunk.llm import connection_test_timeout, generate_debunk_async, generate_tests_async, generate_flow_tests_async, test_connection
 from app.llm_settings import LLMSettings, SettingsUpdate, get_settings, resolve_update, save_settings
 from app.debunk.uml_builder import build_class_diagram, build_dataflow_diagram
 from app.models.ir import IRSlice, ProgramIR
@@ -58,11 +60,20 @@ class AnalyzeResponse(BaseModel):
 
 class SimulateRequest(BaseModel):
     target_symbol_id: str | None = None
+    scope: Literal['function', 'flow'] = 'function'
+
+
+class TestsResponse(BaseModel):
+    analysis_id: str
+    target_symbol_id: str | None
+    scope: Literal['function', 'flow']
+    suite: GeneratedTestSuite
 
 
 class SimulateResponse(BaseModel):
     analysis_id: str
-    target_symbol_id: str
+    target_symbol_id: str | None
+    scope: Literal['function', 'flow'] = 'function'
     test_code: str
     execution: SandboxExecutionResult
 
@@ -70,6 +81,38 @@ class SimulateResponse(BaseModel):
 class SliceResponse(BaseModel):
     slice: IRSlice
     dataflow_diagram: UMLDiagram
+
+
+class ArtifactValidationError(ValueError):
+    """Only validation messages produced by our own QA gate may be displayed."""
+
+
+def _generation_error_message(error: Exception, stage: str) -> str:
+    if isinstance(error, ArtifactValidationError):
+        return str(error)
+    # Instructor wraps transport failures. Inspect types, never provider messages,
+    # which can include credentials, prompts, or complete response bodies.
+    failures = []
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        failures.append(current)
+        if current.__cause__:
+            pending.append(current.__cause__)
+        pending.extend(attempt.exception for attempt in getattr(current, 'failed_attempts', []))
+    if any(isinstance(item, (TimeoutError, APITimeoutError)) for item in failures):
+        return f'{stage.capitalize()} generation timed out. A local model running on CPU may need several minutes. Please retry.'
+    if any(isinstance(item, (AuthenticationError, PermissionDeniedError)) for item in failures):
+        return 'The model provider rejected access. Check credentials and model permissions in LLM settings.'
+    if any(isinstance(item, APIConnectionError) for item in failures):
+        return f'The connection to the model was lost while generating {stage}. Check that the model server is running, then retry.'
+    if any(isinstance(item, (InstructorRetryException, IncompleteOutputException)) for item in failures):
+        return f'The model returned incomplete or invalid structured output for {stage}. Retry, or choose a model that supports the selected output mode.'
+    return f'Could not generate {stage}. Please retry. If this continues, test the connection in LLM settings.'
 
 
 def _prune_sessions() -> None:
@@ -114,7 +157,7 @@ async def _debunk(session: dict[str, Any], ir_slice: IRSlice, settings: LLMSetti
             session['debunks'][target] = result
             return result
         feedback = '\n'.join(qa.errors)
-    raise ValueError('Explanation failed validation after one retry: ' + (feedback or 'unknown error'))
+    raise ArtifactValidationError('Explanation failed validation after one retry: ' + (feedback or 'unknown error'))
 
 
 async def _tests(session: dict[str, Any], ir_slice: IRSlice, settings: LLMSettings) -> GeneratedTestSuite:
@@ -123,13 +166,46 @@ async def _tests(session: dict[str, Any], ir_slice: IRSlice, settings: LLMSettin
         return session['tests'][target]
     feedback = None
     for _ in range(2):
-        result = await generate_tests_async(ir_slice, feedback=feedback, settings=settings)
+        explanation = session['debunks'].get(target)
+        context = {'explanation': explanation} if explanation else {}
+        result = await generate_tests_async(ir_slice, feedback=feedback, settings=settings, **context)
         errors = QAGater.validate_tests(ir_slice, result)
         if not errors:
             session['tests'][target] = result
             return result
         feedback = '\n'.join(errors)
-    raise ValueError('Test generation failed validation after one retry: ' + (feedback or 'unknown error'))
+    raise ArtifactValidationError('Test generation failed validation after one retry: ' + (feedback or 'unknown error'))
+
+
+async def _flow_tests(session: dict[str, Any], settings: LLMSettings) -> GeneratedTestSuite:
+    key = (settings.fingerprint, '__full_flow__')
+    if key in session['tests']:
+        return session['tests'][key]
+    explanations = [value for (fingerprint, _), value in session['debunks'].items()
+                    if fingerprint == settings.fingerprint]
+    feedback = None
+    for _ in range(2):
+        result = await generate_flow_tests_async(session['ir'], session['code'], explanations=explanations,
+                                                 feedback=feedback, settings=settings)
+        errors = QAGater.validate_flow_tests(session['ir'].metadata.primary_language, result)
+        if not errors:
+            session['tests'][key] = result
+            return result
+        feedback = '\n'.join(errors)
+    raise ArtifactValidationError('Test generation failed validation after one retry: ' + (feedback or 'unknown error'))
+
+
+async def _requested_tests(session: dict[str, Any], req: SimulateRequest,
+                           settings: LLMSettings) -> tuple[str | None, GeneratedTestSuite]:
+    if req.scope == 'flow':
+        key = (settings.fingerprint, '__full_flow__')
+        if key not in session['tests']:
+            _require_llm(settings)
+        return None, await _flow_tests(session, settings)
+    ir_slice = _slice(session['ir'], req.target_symbol_id)
+    if (settings.fingerprint, ir_slice.target_symbol_id) not in session['tests']:
+        _require_llm(settings)
+    return ir_slice.target_symbol_id, await _tests(session, ir_slice, settings)
 
 
 @app.post('/api/analyze', response_model=AnalyzeResponse)
@@ -174,9 +250,13 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
 
     async def events():
         tasks = []
+        stage = 'explanation'
         try:
             yield event('slice_ready', {'target_symbol_id': ir_slice.target_symbol_id, 'target_name': ir_slice.target_callable.name})
-            tasks = [asyncio.create_task(_debunk(session, ir_slice, settings)), asyncio.create_task(_tests(session, ir_slice, settings))]
+            local_model = settings.provider in ('ollama', 'lmstudio')
+            tasks = [asyncio.create_task(_debunk(session, ir_slice, settings))]
+            if not local_model:
+                tasks.append(asyncio.create_task(_tests(session, ir_slice, settings)))
             # Validate each artifact before publishing it; tests may finish after explanations.
             debunk = await tasks[0]
             for name in ('language_identification', 'feynman_explanation', 'annotated_code',
@@ -185,14 +265,17 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
                 if name == 'prerequisite_concepts':
                     content = json.dumps([concept.model_dump() for concept in content])
                 yield event('section', {'name': name, 'content': content})
+            stage = 'tests'
+            if local_model:
+                tasks.append(asyncio.create_task(_tests(session, ir_slice, settings)))
             tests = await tasks[1]
             yield event('tests', tests.model_dump())
             yield event('qa_result', {'passed': True, 'errors': []})
             yield event('done', {})
-        except Exception:
+        except Exception as error:
             # Provider exceptions may contain authorization headers or credential-bearing bodies.
-            logger.warning('Generation failed for %s', analysis_id)
-            yield event('error', {'message': 'Generation failed or failed validation. Open LLM settings to test the provider, model, credentials, and output mode.'})
+            logger.warning('%s generation failed for %s (%s)', stage, analysis_id, type(error).__name__)
+            yield event('error', {'message': _generation_error_message(error, stage)})
         finally:
             for task in tasks:
                 if not task.done():
@@ -203,25 +286,37 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
     return EventSourceResponse(events())
 
 
+@app.post('/api/tests/{analysis_id}', response_model=TestsResponse)
+async def generate_test_cases(analysis_id: str, req: SimulateRequest) -> TestsResponse:
+    session = _session(analysis_id)
+    try:
+        target, tests = await _requested_tests(session, req, get_settings())
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning('Test generation failed for %s (%s)', analysis_id, type(error).__name__)
+        raise HTTPException(502, _generation_error_message(error, 'tests')) from None
+    return TestsResponse(analysis_id=analysis_id, target_symbol_id=target, scope=req.scope, suite=tests)
+
+
 @app.post('/api/simulate/{analysis_id}', response_model=SimulateResponse)
 async def simulate(analysis_id: str, req: SimulateRequest) -> SimulateResponse:
     session = _session(analysis_id)
-    ir_slice = _slice(session['ir'], req.target_symbol_id)
     settings = get_settings()
     runner = DockerSandboxRunner()
     available, reason = await asyncio.to_thread(runner.availability)
     if not available:
         raise HTTPException(503, reason)
-    if (settings.fingerprint, ir_slice.target_symbol_id) not in session['tests']:
-        _require_llm(settings)
     try:
-        tests = await _tests(session, ir_slice, settings)
+        target, tests = await _requested_tests(session, req, settings)
+    except HTTPException:
+        raise
     except Exception as error:
         logger.warning('Test generation failed')
-        raise HTTPException(502, 'Test generation failed or failed validation. Open LLM settings and test the connection.') from error
+        raise HTTPException(502, _generation_error_message(error, 'tests')) from None
     execution = await asyncio.to_thread(runner.run_tests, source_code=session['code'],
-                                       test_code=tests.test_code, language=ir_slice.primary_language)
-    return SimulateResponse(analysis_id=analysis_id, target_symbol_id=ir_slice.target_symbol_id,
+                                       test_code=tests.test_code, language=session['ir'].metadata.primary_language)
+    return SimulateResponse(analysis_id=analysis_id, target_symbol_id=target, scope=req.scope,
                             test_code=tests.test_code, execution=execution)
 
 
@@ -277,8 +372,12 @@ async def check_llm_connection(request: Request, update: SettingsUpdate):
     settings = resolve_update(update)
     if not settings.configured:
         raise HTTPException(422, 'Enter an API key for the selected provider.')
+    timeout = connection_test_timeout(settings)
     try:
-        await asyncio.wait_for(test_connection(settings), timeout=30)
+        await asyncio.wait_for(test_connection(settings), timeout=timeout)
+    except TimeoutError:
+        raise HTTPException(504, f'The model did not respond within {timeout} seconds. '
+                            'A local model may still be loading. Let it finish loading, then test again.') from None
     except Exception:
         raise HTTPException(502, 'Connection or structured-output check failed. Check the endpoint, model, credentials, and output mode. Ensure a local model server is running.') from None
     return {'ok': True, 'message': 'Connected. The model returned valid structured output.'}

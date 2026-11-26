@@ -113,6 +113,14 @@ def digest(paths: list[Path]) -> str:
     return result.hexdigest()
 
 
+def backend_source_digest() -> str:
+    """Identify the code loaded by a worker, separately from dependency setup."""
+    files = list((ROOT / 'backend/app').rglob('*.py'))
+    files.extend(path for path in (ROOT / 'backend/requirements.txt', ROOT / 'scripts/launcher.py')
+                 if path.is_file())
+    return digest(files)
+
+
 def ensure_backend() -> None:
     requirements = ROOT / 'backend/requirements.txt'
     expected = digest([requirements])
@@ -232,6 +240,7 @@ def supervisor_running() -> bool:
 
 def worker() -> None:
     # This process uses backend/.venv/bin/python after setup is complete.
+    source_digest = backend_source_digest()
     sys.path.insert(0, str(ROOT / 'backend'))
     from dotenv import load_dotenv
     load_dotenv(ROOT / 'backend/.env')
@@ -269,7 +278,8 @@ def worker() -> None:
             listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
         listener.listen(128)
-        write_json(RUNTIME / 'instance.json', {'port': port, 'token': token})
+        write_json(RUNTIME / 'instance.json', {'port': port, 'token': token,
+                                             'backend_source': source_digest})
         progress('Opening CodeDebunker')
         server.run(sockets=[listener])
 
@@ -338,9 +348,20 @@ class StartupDialog:
             self.process.wait()
 
 
-def start(*, browser: bool = True, ui: bool = True) -> str:
+def _start_instance(*, ui: bool) -> dict:
     record = instance_state()
-    if not control(record):
+    running = control(record)
+    if running and record.get('backend_source') != backend_source_digest():
+        progress('Updating the running backend')
+        if not control(record, stop=True):
+            raise LaunchError('The outdated app could not be stopped. Close CodeDebunker and try opening it again.')
+        deadline = time.monotonic() + 20
+        while supervisor_running():
+            if time.monotonic() >= deadline:
+                raise LaunchError('CodeDebunker is still stopping to apply an update. Try opening it again shortly.')
+            time.sleep(0.1)
+        running = False
+    if not running:
         # The supervisor owns the process lock for the entire service lifetime.
         # Concurrent clicks can spawn candidates; exactly one candidate starts the app.
         log = RUNTIME / 'launcher.log'
@@ -367,6 +388,15 @@ def start(*, browser: bool = True, ui: bool = True) -> str:
                 raise LaunchError('Startup is taking longer than expected. See .runtime/launcher.log and open CodeDebunker again.')
         finally:
             dialog.close()
+    return record
+
+
+def start(*, browser: bool = True, ui: bool = True) -> str:
+    # Serialize reopening and updating so concurrent clicks cannot stop a newly
+    # started worker or open the old worker while it is being replaced.
+    with (RUNTIME / 'start.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = _start_instance(ui=ui)
     url = f'http://127.0.0.1:{record["port"]}'
     if browser and not webbrowser.open(url, new=2):
         raise LaunchError(f'The app is running at {url}, but the browser could not open. Open this address manually.')

@@ -16,12 +16,13 @@ import {
   FileCode2,
   GitBranch,
   Layers,
+  Library,
   LoaderCircle,
   Maximize,
   Minimize,
   Play,
   RefreshCw,
-  Settings2,
+  Save,
   ShieldCheck,
   Settings as SettingsIcon,
   Sparkles,
@@ -32,20 +33,25 @@ import {
   analyzeCode,
   getCapabilities,
   getSlice,
-  simulate,
-  streamDebunk,
   type Capabilities,
 } from "@/lib/api";
 import { samples } from "@/lib/samples";
+import { useLearningJobs, type RunningLearningJob } from "@/lib/useLearningJobs";
 import Settings from "@/components/Settings";
+import SavedArtifacts from "@/components/SavedArtifacts";
+import TestScenarios from "@/components/TestScenarios";
+import {
+  downloadArtifact,
+  downloadTestCode,
+  saveArtifact,
+  type ArtifactDraft,
+} from "@/lib/artifacts";
 import type {
   AnalyzeResponse,
   DebunkSections,
   IRSlice,
-  QAResult,
-  SimulateResponse,
   SourceSpan,
-  TestSuite,
+  TestScope,
   UMLDiagram,
 } from "@/types/api";
 
@@ -78,17 +84,20 @@ export default function App() {
   const [inventory, setInventory] = useState<
     "functions" | "variables" | "imports"
   >("functions");
-  const [sections, setSections] = useState<Partial<DebunkSections>>({});
-  const [suite, setSuite] = useState<TestSuite | null>(null);
-  const [qa, setQa] = useState<QAResult | null>(null);
-  const [execution, setExecution] = useState<SimulateResponse | null>(null);
+  const [testScope, setTestScope] = useState<TestScope>("function");
+  const learning = useLearningJobs();
+  const functionResult = learning.getResult(selectedId);
+  const scopedResult = learning.getResult(selectedId, testScope);
+  const { sections, qa, execution: functionExecution, explaining: generating } = functionResult;
+  const { suite, execution, generatingTests, simulating } = scopedResult;
   const [analyzing, setAnalyzing] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [simulating, setSimulating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [help, setHelp] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveNotice, setSaveNotice] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<"appearance" | "llm">(
     "appearance",
@@ -96,7 +105,6 @@ export default function App() {
   const promptedForLLM = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const diagramWorkspace = useRef<HTMLDivElement>(null);
-  const stream = useRef<EventSource | null>(null);
   const sourceRevision = useRef(0);
   const jobRevision = useRef(0);
 
@@ -116,7 +124,6 @@ export default function App() {
   }
   useEffect(() => {
     void refreshCapabilities();
-    return () => stream.current?.close();
   }, []);
 
   useEffect(() => {
@@ -147,14 +154,12 @@ export default function App() {
 
   function resetLearning() {
     jobRevision.current++;
-    stream.current?.close();
-    stream.current = null;
-    setGenerating(false);
-    setSimulating(false);
-    setSections({});
-    setSuite(null);
-    setQa(null);
-    setExecution(null);
+    learning.reset();
+    setSaveNotice("");
+  }
+  function openSettings(section: "appearance" | "llm") {
+    setSettingsSection(section);
+    setSettingsOpen(true);
   }
   function openSettings(section: "appearance" | "llm") {
     setSettingsSection(section);
@@ -189,8 +194,8 @@ export default function App() {
       id !== selectedId &&
       analysis?.ir.symbols.callables.some((item) => item.id === id)
     ) {
-      resetLearning();
       setError(null);
+      setSaveNotice("");
       setSelectedId(id);
     }
   }
@@ -294,61 +299,96 @@ export default function App() {
   }
 
   function explain() {
-    if (!analysis || !selected || generating) return;
+    if (!analysis || !selected || functionBusy) return;
     if (!capabilities?.llm_configured) {
       openSettings("llm");
       return;
     }
-    resetLearning();
-    setGenerating(true);
     setError(null);
+    setSaveNotice("");
     setTab("explanation");
-    const revision = jobRevision.current;
-    stream.current = streamDebunk(
+    setTestScope("function");
+    learning.explain(analysis.analysis_id, selected.id);
+  }
+
+  async function generateCases() {
+    if (!analysis || (testScope === "function" && !selected) || busy) return;
+    if (!capabilities?.llm_configured) {
+      openSettings("llm");
+      return;
+    }
+    setError(null);
+    setSaveNotice("");
+    await learning.generateCases(
       analysis.analysis_id,
-      selected.id,
-      (event) => {
-        if (revision !== jobRevision.current) return;
-        if (event.type === "section" && event.name in sectionNames) {
-          try {
-            const value =
-              event.name === "prerequisite_concepts"
-                ? JSON.parse(event.content)
-                : event.content;
-            setSections((previous) => ({ ...previous, [event.name]: value }));
-          } catch {
-            setError(
-              "The explanation contained an invalid section. Please retry.",
-            );
-          }
-        } else if (event.type === "tests") setSuite(event);
-        else if (event.type === "qa_result") setQa(event);
-        else if (event.type === "error") setError(event.message);
-      },
-      () => {
-        if (revision === jobRevision.current) setGenerating(false);
-      },
+      testScope === "function" ? selected?.id : undefined,
+      testScope,
     );
   }
 
   async function runSimulation() {
-    if (!analysis || !selected || simulating) return;
-    if (!capabilities?.llm_configured && !suite) {
-      openSettings("llm");
-      return;
-    }
-    setSimulating(true);
+    if (!analysis || !suite || busy) return;
     setError(null);
+    setSaveNotice("");
     setTab("tests");
+    await learning.runTests(
+      analysis.analysis_id,
+      testScope === "function" ? selected?.id : undefined,
+      testScope,
+    );
+  }
+
+  function viewJob(job: RunningLearningJob) {
+    if (job.targetId) {
+      const target = analysis?.ir.symbols.callables.find((item) => item.id === job.targetId);
+      if (target) selectSymbol(target.id, target.span);
+    }
+    setTestScope(job.scope);
+    setTab(job.kind === "explanation" ? "explanation" : "tests");
+  }
+
+  function artifact(kind: "explanation" | "tests"): ArtifactDraft | null {
+    if (!analysis) return null;
+    const context = {
+      filename,
+      language: analysis.ir.metadata.primary_language,
+      source: code,
+      targetName:
+        kind === "tests" && testScope === "flow"
+          ? "Complete source flow"
+          : selected?.qualname || "Source",
+      scope: kind === "explanation" ? ("function" as const) : testScope,
+    };
+    if (kind === "explanation") {
+      return Object.keys(sections).length ? { ...context, kind, sections } : null;
+    }
+    return suite
+      ? { ...context, kind, suite, execution: execution ?? undefined }
+      : null;
+  }
+
+  async function saveCurrent(kind: "explanation" | "tests") {
+    const draft = artifact(kind);
+    if (!draft || saving) return;
     const revision = jobRevision.current;
+    setSaving(true);
+    setSaveNotice("");
     try {
-      const result = await simulate(analysis.analysis_id, selected.id);
-      if (revision === jobRevision.current) setExecution(result);
+      await saveArtifact(draft);
+      if (revision === jobRevision.current)
+        setSaveNotice("Saved to your library in this browser.");
     } catch (failure) {
       if (revision === jobRevision.current) setError(message(failure));
     } finally {
-      if (revision === jobRevision.current) setSimulating(false);
+      setSaving(false);
     }
+  }
+
+  function downloadCurrent(kind: "explanation" | "tests", codeOnly = false) {
+    const draft = artifact(kind);
+    if (!draft) return;
+    if (codeOnly && draft.kind === "tests") downloadTestCode(draft);
+    else downloadArtifact(draft);
   }
 
   function exportIR() {
@@ -367,7 +407,13 @@ export default function App() {
   const aiReady = Boolean(capabilities?.llm_configured);
   const sandboxReady = Boolean(capabilities?.sandbox_available);
   const diagram = view === "class" ? analysis?.class_diagram : flow;
-  const busy = generating || simulating;
+  const functionBusy = functionResult.explaining ||
+    functionResult.generatingTests || functionResult.simulating;
+  const busy = scopedResult.explaining || generatingTests || simulating;
+  const learningError = tab === "explanation"
+    ? functionResult.error
+    : tab === "tests" ? scopedResult.error : null;
+  const visibleError = error || learningError;
   const testCode = execution?.test_code || suite?.test_code;
 
   return (
@@ -390,6 +436,16 @@ export default function App() {
         </div>
         <div className="header-actions">
           <button
+            className="button secondary library-button"
+            onClick={() => setLibraryOpen(true)}
+            aria-haspopup="dialog"
+            aria-label="Saved library"
+            title="Saved library"
+          >
+            <Library size={17} />
+            <span>Saved library</span>
+          </button>
+          <button
             className="icon-button"
             onClick={() => openSettings("appearance")}
             aria-label="Open settings"
@@ -407,6 +463,7 @@ export default function App() {
           </button>
         </div>
       </header>
+      {libraryOpen && <SavedArtifacts onClose={() => setLibraryOpen(false)} />}
       {settingsOpen && (
         <Settings
           initialSection={settingsSection}
@@ -437,14 +494,27 @@ export default function App() {
           </p>
           <p>
             <strong>Explain function</strong> creates a five-part learning guide
-            and tests. <strong>Run tests</strong> executes generated tests
+            and tests. In <strong>Tests & simulation</strong>, choose a selected
+            function or the full source flow, then <strong>Generate test cases</strong>{" "}
+            for model-predicted inputs, outputs, and traces.{" "}
+            <strong>Run tests in Docker</strong> executes generated tests
             inside an isolated Docker container. These features require a model
             connection in Settings → LLM configuration; test execution also
             requires the runner image.
           </p>
           <p>
+            Use <strong>Save explanation</strong> or <strong>Save test cases</strong>{" "}
+            to keep a copy in this browser’s saved library. Downloads also let
+            you keep copies on disk.
+          </p>
+          <p>
             Use Ctrl/Cmd + Enter in the editor to analyze. Editing your source
             clears the previous analysis.
+          </p>
+          <p>
+            Explanations and tests continue while you explore other functions or
+            variables. Use the running-work links to return, or select the
+            original function to see its results.
           </p>
         </aside>
       )}
@@ -496,16 +566,47 @@ export default function App() {
             README for the setup commands.
           </div>
         )}
-        <div role="alert" className={`error-banner ${error ? "" : "hidden"}`}>
-          <span>{error}</span>
+        <div role="alert" className={`error-banner ${visibleError ? "" : "hidden"}`}>
+          <span>{visibleError}</span>
           <button
             className="icon-button"
-            onClick={() => setError(null)}
+            onClick={() => {
+              setError(null);
+              learning.dismissError(selectedId, tab === "explanation" ? "function" : testScope);
+            }}
             aria-label="Dismiss error"
           >
             <X size={16} />
           </button>
         </div>
+        {learning.runningJobs.length > 0 && (
+          <div className="learning-jobs" aria-label="Running work">
+            <p role="status">
+              <LoaderCircle size={15} className="spin" />
+              Work continues while you explore other symbols.
+            </p>
+            {learning.runningJobs.map((job) => (
+              <button
+                className="inline-link"
+                key={`${job.scope}-${job.targetId}`}
+                onClick={() => viewJob(job)}
+              >
+                {job.kind === "explanation" ? "Explanation" : job.kind === "tests" ? "Test generation" : "Simulation"}
+                {" · "}
+                {job.scope === "flow" ? "Full source flow" : analysis?.ir.symbols.callables.find((item) => item.id === job.targetId)?.qualname}
+              </button>
+            ))}
+          </div>
+        )}
+        {saveNotice && (
+          <div className="save-notice" role="status">
+            <Check size={16} />
+            {saveNotice}
+            <button className="inline-link" onClick={() => setLibraryOpen(true)}>
+              Open library
+            </button>
+          </div>
+        )}
         <div className="workbench">
           <section className="source-panel panel" aria-label="Source workspace">
             <div className="panel-title">
@@ -872,10 +973,10 @@ export default function App() {
                           selectedId={selectedId}
                           onSelect={selectSymbol}
                           testStatus={
-                            execution
+                            functionExecution?.target_symbol_id
                               ? {
-                                  symbolId: execution.target_symbol_id,
-                                  status: execution.execution.status,
+                                  symbolId: functionExecution.target_symbol_id,
+                                  status: functionExecution.execution.status,
                                 }
                               : null
                           }
@@ -967,7 +1068,7 @@ export default function App() {
                   </div>
                   <button
                     className="button primary"
-                    disabled={!selected || busy || analyzing}
+                    disabled={!selected || functionBusy || analyzing}
                     onClick={explain}
                   >
                     {generating ? (
@@ -982,6 +1083,20 @@ export default function App() {
                         : "Explain function"}
                   </button>
                 </div>
+                {Object.keys(sections).length > 0 && (
+                  <div className="artifact-actions">
+                    <button
+                      className="button secondary"
+                      disabled={saving}
+                      onClick={() => void saveCurrent("explanation")}
+                    >
+                      <Save size={15} />Save explanation
+                    </button>
+                    <button className="button secondary" onClick={() => downloadCurrent("explanation")}>
+                      <Download size={15} />Download Markdown
+                    </button>
+                  </div>
+                )}
                 {!aiReady && (
                   <div className="notice">
                     <button
@@ -1071,11 +1186,46 @@ export default function App() {
                 <div className="content-heading">
                   <div>
                     <p className="eyebrow">FOLLOW THE DATA</p>
-                    <h2>Put the function to the test.</h2>
+                    <h2>Explore test cases and outcomes.</h2>
                   </div>
+                </div>
+                <div className="test-scope">
+                  <label htmlFor="test-scope">Test scope</label>
+                  <select
+                    id="test-scope"
+                    value={testScope}
+                    disabled={analyzing}
+                    onChange={(event) => {
+                      setTestScope(event.target.value as TestScope);
+                      setError(null);
+                      setSaveNotice("");
+                    }}
+                  >
+                    <option value="function">Selected function</option>
+                    <option value="flow">Full source flow</option>
+                  </select>
+                  <p>
+                    {testScope === "flow"
+                      ? "Trace inputs through the complete file, its entry points, and helper calls. The full source is sent to your connected model."
+                      : `Test ${selected?.qualname || "a selected function"} using its source and immediate dependency context.`}
+                  </p>
+                </div>
+                <div className="artifact-actions">
                   <button
                     className="button primary"
-                    disabled={!selected || !sandboxReady || busy || analyzing}
+                    disabled={!analysis || (testScope === "function" && !selected) || busy || analyzing}
+                    onClick={() => void generateCases()}
+                  >
+                    {generatingTests ? (
+                      <LoaderCircle size={16} className="spin" />
+                    ) : (
+                      <Sparkles size={16} />
+                    )}
+                    {generatingTests ? "Simulating cases…" : "Generate test cases"}
+                  </button>
+                  <button
+                    className="button secondary"
+                    disabled={!suite || !sandboxReady || busy || analyzing}
                     onClick={() => void runSimulation()}
                   >
                     {simulating ? (
@@ -1083,9 +1233,34 @@ export default function App() {
                     ) : (
                       <Play size={16} />
                     )}
-                    {simulating ? "Running…" : "Run tests"}
+                    {simulating ? "Running…" : "Run tests in Docker"}
                   </button>
                 </div>
+                {suite && (
+                  <div className="artifact-actions">
+                    <button
+                      className="button secondary"
+                      disabled={saving || busy}
+                      onClick={() => void saveCurrent("tests")}
+                    >
+                      <Save size={15} />Save test cases
+                    </button>
+                    <button className="button secondary" onClick={() => downloadCurrent("tests")}>
+                      <Download size={15} />Download cases
+                    </button>
+                    <button className="button secondary" onClick={() => downloadCurrent("tests", true)}>
+                      <FileCode2 size={15} />Download test code
+                    </button>
+                  </div>
+                )}
+                {generatingTests && (
+                  <div className="generation-progress" role="status">
+                    <LoaderCircle className="spin" size={18} />
+                    Generating runnable tests and predicting each case with your
+                    connected model. Local models may need several minutes.
+                  </div>
+                )}
+                {suite && <TestScenarios suite={suite} />}
                 <div className="sandbox-note">
                   <ShieldCheck size={17} />
                   <p>
@@ -1096,7 +1271,7 @@ export default function App() {
                 {!sandboxReady && (
                   <div className="notice">
                     {capabilities?.sandbox_message ||
-                      "Connect the backend and set up Docker to enable simulation."}
+                      "Set up Docker to execute the generated tests. LLM simulations work without Docker."}
                   </div>
                 )}
                 {!aiReady && !suite && (
@@ -1113,7 +1288,7 @@ export default function App() {
                 {simulating && (
                   <div className="generation-progress">
                     <LoaderCircle size={18} className="spin" />
-                    Generating and validating tests, then running the sandbox…
+                    Running the generated suite in the sandbox…
                   </div>
                 )}
                 {execution && (
@@ -1125,6 +1300,7 @@ export default function App() {
                         {execution.execution.status}
                       </span>
                       <span>
+                        Actual Docker execution ·{" "}
                         {execution.execution.tests.length} tests ·{" "}
                         {execution.execution.duration_seconds.toFixed(2)}s
                       </span>
@@ -1178,14 +1354,14 @@ export default function App() {
                     </pre>
                   </article>
                 ) : (
-                  !simulating && (
+                  !simulating && !generatingTests && (
                     <div className="learning-placeholder">
                       <Play size={28} />
-                      <h3>See what holds up.</h3>
+                      <h3>Follow a test from input to output.</h3>
                       <p>
                         Generate tests for normal inputs, boundaries, and data
-                        transformations. Each result is linked to the selected
-                        function.
+                        transformations. Choose a function or the full source flow.
+                        Model predictions are available before you run tests.
                       </p>
                     </div>
                   )

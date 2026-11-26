@@ -124,15 +124,10 @@ class QAGater:
 
     @staticmethod
     def validate_tests(ir_slice: IRSlice, tests: GeneratedTestSuite) -> list[str]:
-        expected = 'pytest' if ir_slice.primary_language == 'python' else 'jest'
-        errors = []
-        if tests.framework.lower() != expected:
-            errors.append(f'Test framework must be {expected}.')
+        errors = QAGater.validate_flow_tests(ir_slice.primary_language, tests)
         parser, _ = get_parser(ir_slice.primary_language)
         code = tests.test_code.encode()
         tree = parser.parse(code)
-        if tree.root_node.has_error:
-            errors.append('Generated tests contain syntax errors.')
         identifiers = {node_text(node, code) for node in _walk(tree.root_node)
                        if node.type in {'identifier', 'property_identifier'}}
         names = {ir_slice.target_callable.name}
@@ -140,10 +135,27 @@ class QAGater:
                      if container.id == ir_slice.target_callable.container_id)
         if not names.intersection(identifiers):
             errors.append('Tests must reference the selected callable or its owning class.')
+        return errors
+
+    @staticmethod
+    def validate_flow_tests(language: str, tests: GeneratedTestSuite) -> list[str]:
+        expected = 'pytest' if language == 'python' else 'jest'
+        errors = []
+        if tests.framework.lower() != expected:
+            errors.append(f'Test framework must be {expected}.')
+        parser, _ = get_parser(language)
+        tree = parser.parse(tests.test_code.encode())
+        if tree.root_node.has_error:
+            errors.append('Generated tests contain syntax errors.')
         if 'source_target' not in tests.test_code:
             errors.append('Import the module under test from source_target.')
         if not tests.test_case_names:
             errors.append('Provide names for the generated test cases.')
+        for scenario in tests.scenarios:
+            if scenario.name not in tests.test_case_names:
+                errors.append('Each simulated scenario must match a generated test case name.')
+        if {case.name for case in tests.scenarios} != set(tests.test_case_names):
+            errors.append('Provide a simulated scenario for every generated test case.')
         return errors
 
     @staticmethod
