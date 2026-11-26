@@ -1,0 +1,15 @@
+#!/bin/sh
+# Start from any directory, including a graphical desktop launcher.
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+if [ -x "$project_root/backend/.venv/bin/python" ]; then
+    exec "$project_root/backend/.venv/bin/python" "$project_root/scripts/launcher.py" "$@"
+fi
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$project_root/scripts/launcher.py" "$@"
+fi
+if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title=CodeDebunker --text='Install Python 3.11 or newer, then open CodeDebunker again.'
+else
+    printf '%s\n' 'CodeDebunker needs Python 3.11 or newer.' >&2
+fi
+exit 1

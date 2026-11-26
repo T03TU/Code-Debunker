@@ -4,11 +4,39 @@ A local code exploration workbench. Paste or upload Python, JavaScript, or TypeS
 
 Structural analysis uses Tree-sitter and NetworkX; it needs neither an API key nor Docker and never executes submitted source.
 
-## Run locally
+## Open the app (Linux desktop)
 
-Requires Python 3.11+, Node.js 20+, and npm. Docker is optional for structural analysis and explanations, and required for test execution.
+Open **CodeDebunker** from the Applications menu. It starts the local app and opens your browser automatically, without a terminal. You can also double-click `CodeDebunker.desktop` in this project; GNOME may require **Allow Launching** for a file-manager shortcut the first time.
 
-Install dependencies from the project root:
+The launcher automatically creates the Python environment, installs dependencies, and builds the interface when necessary. A small progress window appears during setup. Later launches reuse the existing server and open the app immediately. It serves the built interface and API on one local port; Vite is not needed for normal use. If port 8000 is occupied, it selects another available local port automatically.
+
+For a fresh checkout, register the desktop shortcut once:
+
+```bash
+python3 scripts/install_desktop.py
+```
+
+Or launch directly without registering a shortcut:
+
+```bash
+./CodeDebunker
+```
+
+Python 3.11+ is required. Node.js 20+ and npm are needed only when the interface needs to be built. Dependency downloads need an internet connection on first setup. An API key and Docker are optional for opening the app and exploring code structure.
+
+The server stays in the background when you close the browser, so reopening is fast. Right-click the Applications-menu entry and choose **Stop CodeDebunker** to stop it. Terminal equivalents are:
+
+```bash
+./CodeDebunker --status
+./CodeDebunker --stop
+./CodeDebunker --no-browser  # Start without opening a browser or progress window.
+```
+
+Startup logs are in `.runtime/launcher.log`. Launcher state and control credentials are private to your user. The launcher checks an instance-specific token before reusing or stopping a server; it does not kill a process just because it occupies port 8000. If startup fails, the launcher displays an error with the log location. After correcting the problem, open it again to retry setup. Re-run `install_desktop.py` if you move the project folder.
+
+## Developer startup
+
+For frontend hot reload, the existing development workflow is still available. Install dependencies if necessary:
 
 ```bash
 python3 -m venv backend/.venv
@@ -16,29 +44,18 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 npm --prefix frontend ci
 ```
 
-Start both services:
+Then run:
 
 ```bash
+./CodeDebunker --stop
 ./scripts/dev.sh
 ```
 
-Open **http://127.0.0.1:5173**. The frontend proxies `/api` requests to the backend on port 8000. API documentation is at **http://127.0.0.1:8000/docs**. Stop both services with Ctrl+C.
-
-To run services separately:
-
-```bash
-# Terminal 1, from backend/
-.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-
-# Terminal 2, from frontend/
-CHOKIDAR_USEPOLLING=1 npm run dev -- --host 127.0.0.1
-```
-
-The polling option handles systems with exhausted file watchers.
+Open **http://127.0.0.1:5173**. The frontend proxies `/api` requests to the backend on port 8000. API documentation is at **http://127.0.0.1:8000/docs**. Stop both development services with Ctrl+C. The developer script uses polling to handle systems with exhausted file watchers.
 
 ## Explanations and generated tests
 
-Copy `backend/.env.example` to `backend/.env` and set `OPENAI_API_KEY`. `OPENAI_MODEL` defaults to `gpt-4o` and can be changed to a model compatible with the existing Instructor/OpenAI integration. The startup script loads this file; for manual startup, pass `--env-file .env` to Uvicorn. Restart the backend after configuration changes. Credentials stay on the backend.
+Copy `backend/.env.example` to `backend/.env` and set `OPENAI_API_KEY`. `OPENAI_MODEL` defaults to `gpt-4o` and can be changed to a model compatible with the existing Instructor/OpenAI integration. The desktop launcher and developer script load this file; for manual startup, pass `--env-file .env` to Uvicorn. After configuration changes, stop CodeDebunker and open it again. Credentials stay on the backend.
 
 **Explain function** sends the selected callable's source and immediate dependency context to the configured OpenAI model. It generates language identification, a Feynman explanation, annotated code, an illustrative execution walkthrough, prerequisite concepts, and tests. It never sends the entire source file to the model. Structural validation runs before each generated artifact is emitted; one corrective retry receives the validation errors. The annotated target must preserve its executable tokens. These checks do not prove semantic correctness; use the actual test results to evaluate behavior.
 
@@ -59,6 +76,12 @@ Test reports are emitted before container exit because temporary filesystem cont
 ## Verification
 
 ```bash
+# Launcher tests, from the project root
+backend/.venv/bin/python -m pytest scripts/tests -q
+
+# Include real launcher lifecycle checks (starts/stops the local app)
+RUN_LAUNCHER_TESTS=1 backend/.venv/bin/python -m pytest scripts/tests -q
+
 cd backend
 .venv/bin/python -m pytest -q
 
@@ -69,7 +92,9 @@ cd ../frontend
 npm run build
 ```
 
-Verification for this milestone: **55 tests passed with real Docker execution enabled**, the TypeScript/Vite production build passed, and Chrome checks covered all three languages, function selection, diagrams, source invalidation, and mobile layout. Desktop and mobile captures are in `artifacts/`. Live model generation has not been exercised because no API key is configured.
+Desktop-launcher verification: **82 combined tests passed**, including 24 launcher unit checks, three real startup/lifecycle checks, and the 55 backend/sandbox checks. The installed desktop entry also passes `desktop-file-validate`.
+
+Workbench verification: **55 tests passed with real Docker execution enabled**, the TypeScript/Vite production build passed, and Chrome checks covered all three languages, function selection, diagrams, source invalidation, and mobile layout. Desktop and mobile captures are in `artifacts/`. Live model generation has not been exercised because no API key is configured.
 
 Default tests mock model and Docker calls. Opt-in tests exercise real Python, JavaScript, and TypeScript runners, assertion failures, timeout cleanup, non-root execution, and read-only source mounts. Submitted source and generated tests execute only in Docker.
 
