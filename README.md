@@ -55,9 +55,19 @@ Open **http://127.0.0.1:5173**. The frontend proxies `/api` requests to the back
 
 ## Explanations and generated tests
 
-Copy `backend/.env.example` to `backend/.env` and set `OPENAI_API_KEY`. `OPENAI_MODEL` defaults to `gpt-4o` and can be changed to a model compatible with the existing Instructor/OpenAI integration. The desktop launcher and developer script load this file; for manual startup, pass `--env-file .env` to Uvicorn. After configuration changes, stop CodeDebunker and open it again. Credentials stay on the backend.
+Open **LLM settings** in the header to connect a model. The dialog opens automatically when no connection is configured; dismiss it to continue structural analysis. Choose a provider, enter the exact model ID (or Azure deployment name), and supply its credentials and endpoint where needed. **Test connection** makes a small request to check authentication and structured output; it may use provider credits. **Save settings** applies the configuration immediately, without restarting the app.
 
-**Explain function** sends the selected callable's source and immediate dependency context to the configured OpenAI model. It generates language identification, a Feynman explanation, annotated code, an illustrative execution walkthrough, prerequisite concepts, and tests. It never sends the entire source file to the model. Structural validation runs before each generated artifact is emitted; one corrective retry receives the validation errors. The annotated target must preserve its executable tokens. These checks do not prove semantic correctness; use the actual test results to evaluate behavior.
+The dialog includes OpenAI, Anthropic, Google Gemini, Azure OpenAI, Amazon Bedrock, Google Cloud Vertex AI, OpenRouter, Ollama, and LM Studio. **Other OpenAI-compatible service** supports endpoints such as vLLM, llama.cpp, and private gateways. **Other provider (LiteLLM)** accepts `provider/model` identifiers for additional [LiteLLM-supported providers](https://docs.litellm.ai/docs/providers). Model names are editable rather than restricted to a fixed catalog. The model must support tool calling or JSON output; choose the appropriate **Structured output** mode and test it.
+
+For local models, start your model server and load or install the model first. Ollama defaults to `http://127.0.0.1:11434` (server root, without `/v1`); LM Studio defaults to `http://127.0.0.1:1234/v1`. No API key is required for an unauthenticated local server. Addresses are resolved from the backend machine; when the backend runs in a container or on another machine, enter an address it can reach.
+
+Azure requires its resource endpoint and API version. Bedrock accepts an API key or AWS access key, secret, optional session token, and region. Vertex accepts project, location, and service account JSON. Bedrock and Vertex can also use an existing backend cloud identity when explicit credentials are omitted. Provider-side account access and model permissions are still required.
+
+Settings are saved in `.runtime/llm-settings.json`, a file readable and writable only by your OS user (mode `0600`), excluded from source control. Credentials are stored locally in this file as plain text, never returned by the settings API or saved in browser storage. Leaving a credential field blank keeps its saved value for the same service. Changing provider, endpoint, or cloud account requires entering credentials again. Use **Forget existing credentials** to remove saved values while saving replacements or an anonymous local connection. Configuration changes separate the generation cache, so later requests use the selected model.
+
+Existing `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o`), and optional `OPENAI_BASE_URL` environment variables remain supported until settings are saved through the dialog. The desktop launcher and developer script load `backend/.env`; manual Uvicorn startup can use `--env-file .env`. Saved dialog settings take precedence. Deleting `.runtime/llm-settings.json` restores environment-based defaults.
+
+**Explain function** sends the selected callable's source and immediate dependency context to the configured model. It generates language identification, a Feynman explanation, annotated code, an illustrative execution walkthrough, prerequisite concepts, and tests. It never sends the entire source file to the model. Structural validation runs before each generated artifact is emitted; one corrective retry receives the validation errors. The annotated target must preserve its executable tokens. These checks do not prove semantic correctness; use the actual test results to evaluate behavior.
 
 ## Isolated execution
 
@@ -97,6 +107,8 @@ Desktop-launcher verification: **82 combined tests passed**, including 24 launch
 Workbench verification: **55 tests passed with real Docker execution enabled**, the TypeScript/Vite production build passed, and Chrome checks covered all three languages, function selection, diagrams, source invalidation, and mobile layout. Desktop and mobile captures are in `artifacts/`. Live model generation has not been exercised because no API key is configured.
 
 Default tests mock model and Docker calls. Opt-in tests exercise real Python, JavaScript, and TypeScript runners, assertion failures, timeout cleanup, non-root execution, and read-only source mounts. Submitted source and generated tests execute only in Docker.
+
+LLM settings verification: **83 backend tests and 24 launcher tests passed**, with five Docker integration checks and three launcher lifecycle checks skipped. The production build passed. Chrome checks covered the initial setup prompt, cloud credential fields, local defaults, desktop/mobile layout, dismissal/reopening, connection checks in JSON and tool modes, save/reload persistence, and the complete explanation/test-generation workflow against an isolated local mock model server. Hosted-provider calls have not been tested with real credentials. Dialog captures are in `artifacts/llm-settings-desktop.png` and `artifacts/llm-settings-mobile.png`.
 
 ## Serve the production build locally
 

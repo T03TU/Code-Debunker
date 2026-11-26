@@ -1318,3 +1318,160 @@ summary {
   width: 100%;
   height: 100%;
 }
+
+.settings-trigger {
+  white-space: nowrap;
+}
+.inline-link {
+  color: #c4b0ff;
+  text-decoration: underline;
+  padding: 0;
+}
+.llm-dialog {
+  width: min(600px, calc(100vw - 28px));
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  border: 1px solid #514466;
+  border-radius: 12px;
+  padding: 28px;
+  color: #e8ebf2;
+  background: #1a1d2b;
+  box-shadow: 0 24px 80px #0009;
+}
+.llm-dialog::backdrop {
+  background: #080b12bf;
+  backdrop-filter: blur(4px);
+}
+.settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.settings-heading .eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.settings-heading h2 {
+  margin: 8px 0 12px;
+  font-size: 1.5rem;
+}
+.llm-dialog > p {
+  color: #aeb9ce;
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+.llm-dialog fieldset {
+  border: 0;
+  padding: 0;
+  margin: 20px 0 0;
+  min-width: 0;
+}
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0 10px;
+  font-size: 0.875rem;
+}
+.settings-field > span {
+  color: #d2d9e8;
+  font-weight: 500;
+}
+.settings-field input,
+.settings-field select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  background-color: #121622;
+  border: 1px solid #394257;
+  border-radius: 6px;
+  color: #d9dfeb;
+  font-size: 0.875rem;
+}
+.settings-field select {
+  padding-right: 30px;
+}
+.settings-field input::placeholder {
+  color: #7f8aa1;
+}
+.settings-hint,
+.settings-privacy {
+  color: #99a6be;
+  font-size: 0.75rem;
+  line-height: 1.7;
+}
+.settings-privacy {
+  padding: 14px;
+  background: #242537;
+  border-radius: 6px;
+  margin-top: 18px;
+}
+.settings-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 18px;
+  font-size: 0.8125rem;
+  color: #bac4d7;
+  line-height: 1.6;
+}
+.settings-checkbox input {
+  margin-top: 4px;
+  accent-color: #b89ae8;
+}
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin: 22px 0 14px;
+  flex-wrap: wrap;
+}
+.settings-feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  border-radius: 6px;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.settings-error {
+  color: #f3b2bf;
+  background: #492a3555;
+  border: 1px solid #75414f;
+}
+.settings-success {
+  color: #9edbbc;
+  background: #21453855;
+  border: 1px solid #3a6551;
+}
+@media (max-width: 500px) {
+  .topbar {
+    gap: 10px;
+    padding: 0 14px;
+  }
+  .settings-trigger {
+    font-size: 0.75rem;
+    padding: 8px;
+    gap: 5px;
+  }
+  .topbar .brand {
+    font-size: 1rem;
+    gap: 7px;
+  }
+  .topbar .brand small {
+    font-size: 0.5rem;
+    letter-spacing: 1.2px;
+  }
+  .brand-icon {
+    width: 34px;
+    height: 34px;
+  }
+  .llm-dialog {
+    padding: 20px;
+  }
+}
