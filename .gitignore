@@ -14,7 +14,7 @@ CodeDebunker.desktop
 .env.*
 !.env.example
 *.log
-.agent
+.agent/
 GEMINI.md
 
 # Local editor state

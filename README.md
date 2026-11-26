@@ -110,6 +110,8 @@ Workbench verification: **55 tests passed with real Docker execution enabled**, 
 
 Default tests mock model and Docker calls. Opt-in tests exercise real Python, JavaScript, and TypeScript runners, assertion failures, timeout cleanup, non-root execution, and read-only source mounts. Submitted source and generated tests execute only in Docker.
 
+LLM settings verification: **83 backend tests and 24 launcher tests passed**, with five Docker integration checks and three launcher lifecycle checks skipped. The production build passed. Chrome checks covered the initial setup prompt, cloud credential fields, local defaults, desktop/mobile layout, dismissal/reopening, connection checks in JSON and tool modes, save/reload persistence, and the complete explanation/test-generation workflow against an isolated local mock model server. Hosted-provider calls have not been tested with real credentials. Dialog captures are in `artifacts/llm-settings-desktop.png` and `artifacts/llm-settings-mobile.png`.
+
 ## Serve the production build locally
 
 ```bash

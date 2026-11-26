@@ -19,6 +19,7 @@ import {
   LoaderCircle,
   Play,
   RefreshCw,
+  Settings2,
   ShieldCheck,
   Settings as SettingsIcon,
   Sparkles,
@@ -1147,6 +1148,17 @@ export default function App() {
           </span>
         </footer>
       </main>
+      {settingsOpen && (
+        <LLMSettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          onSaved={() => {
+            resetLearning();
+            setError(null);
+            setSettingsOpen(false);
+            void refreshCapabilities();
+          }}
+        />
+      )}
     </div>
   );
 }
