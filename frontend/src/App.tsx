@@ -161,6 +161,10 @@ export default function App() {
     setSettingsSection(section);
     setSettingsOpen(true);
   }
+  function openSettings(section: "appearance" | "llm") {
+    setSettingsSection(section);
+    setSettingsOpen(true);
+  }
   function invalidate() {
     sourceRevision.current++;
     resetLearning();
@@ -1377,6 +1381,17 @@ export default function App() {
           </span>
         </footer>
       </main>
+      {settingsOpen && (
+        <LLMSettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          onSaved={() => {
+            resetLearning();
+            setError(null);
+            setSettingsOpen(false);
+            void refreshCapabilities();
+          }}
+        />
+      )}
     </div>
   );
 }
