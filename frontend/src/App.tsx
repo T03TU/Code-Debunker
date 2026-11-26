@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Settings2,
   ShieldCheck,
+  Settings as SettingsIcon,
   Sparkles,
   Upload,
   X,
@@ -34,7 +35,7 @@ import {
   type Capabilities,
 } from "@/lib/api";
 import { samples } from "@/lib/samples";
-import LLMSettingsDialog from "@/components/LLMSettingsDialog";
+import Settings from "@/components/Settings";
 import type {
   AnalyzeResponse,
   DebunkSections,
@@ -86,6 +87,9 @@ export default function App() {
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [help, setHelp] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<"appearance" | "llm">(
+    "appearance",
+  );
   const promptedForLLM = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const stream = useRef<EventSource | null>(null);
@@ -99,7 +103,7 @@ export default function App() {
       setApiOnline(true);
       if (!promptedForLLM.current) {
         promptedForLLM.current = true;
-        if (!result.llm_configured) setSettingsOpen(true);
+        if (!result.llm_configured) openSettings("llm");
       }
     } catch {
       setApiOnline(false);
@@ -121,6 +125,10 @@ export default function App() {
     setSuite(null);
     setQa(null);
     setExecution(null);
+  }
+  function openSettings(section: "appearance" | "llm") {
+    setSettingsSection(section);
+    setSettingsOpen(true);
   }
   function invalidate() {
     sourceRevision.current++;
@@ -258,7 +266,7 @@ export default function App() {
   function explain() {
     if (!analysis || !selected || generating) return;
     if (!capabilities?.llm_configured) {
-      setSettingsOpen(true);
+      openSettings("llm");
       return;
     }
     resetLearning();
@@ -295,6 +303,10 @@ export default function App() {
 
   async function runSimulation() {
     if (!analysis || !selected || simulating) return;
+    if (!capabilities?.llm_configured && !suite) {
+      openSettings("llm");
+      return;
+    }
     setSimulating(true);
     setError(null);
     setTab("tests");
@@ -346,22 +358,37 @@ export default function App() {
             Read it. Trace it. Understand it.
           </span>
         </div>
-        <button
-          className="button settings-trigger"
-          onClick={() => setSettingsOpen(true)}
-          aria-haspopup="dialog"
-        >
-          <Settings2 size={17} /> LLM settings
-        </button>
-        <button
-          className="icon-button"
-          onClick={() => setHelp(!help)}
-          aria-label="Show getting started guide"
-          aria-expanded={help}
-        >
-          <CircleHelp size={20} />
-        </button>
+        <div className="header-actions">
+          <button
+            className="icon-button"
+            onClick={() => openSettings("appearance")}
+            aria-label="Open settings"
+            title="Settings"
+          >
+            <SettingsIcon size={20} />
+          </button>
+          <button
+            className="icon-button"
+            onClick={() => setHelp(!help)}
+            aria-label="Show getting started guide"
+            aria-expanded={help}
+          >
+            <CircleHelp size={20} />
+          </button>
+        </div>
       </header>
+      {settingsOpen && (
+        <Settings
+          initialSection={settingsSection}
+          onClose={() => setSettingsOpen(false)}
+          onLLMSaved={() => {
+            resetLearning();
+            setError(null);
+            setSettingsOpen(false);
+            void refreshCapabilities();
+          }}
+        />
+      )}
       {help && (
         <aside className="help-panel">
           <button
@@ -382,7 +409,7 @@ export default function App() {
             <strong>Explain function</strong> creates a five-part learning guide
             and tests. <strong>Run tests</strong> executes generated tests
             inside an isolated Docker container. These features require a model
-            connection in <strong>LLM settings</strong>; test execution also
+            connection in Settings → LLM configuration; test execution also
             requires the runner image.
           </p>
           <p>
@@ -421,7 +448,7 @@ export default function App() {
             </button>
             <button
               className="connection"
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => openSettings("llm")}
               aria-haspopup="dialog"
             >
               <Sparkles size={13} />
@@ -902,7 +929,7 @@ export default function App() {
                   <div className="notice">
                     <button
                       className="inline-link"
-                      onClick={() => setSettingsOpen(true)}
+                      onClick={() => openSettings("llm")}
                     >
                       Connect an LLM
                     </button>{" "}
@@ -991,13 +1018,7 @@ export default function App() {
                   </div>
                   <button
                     className="button primary"
-                    disabled={
-                      !selected ||
-                      !sandboxReady ||
-                      (!aiReady && !suite) ||
-                      busy ||
-                      analyzing
-                    }
+                    disabled={!selected || !sandboxReady || busy || analyzing}
                     onClick={() => void runSimulation()}
                   >
                     {simulating ? (
@@ -1025,7 +1046,7 @@ export default function App() {
                   <div className="notice">
                     <button
                       className="inline-link"
-                      onClick={() => setSettingsOpen(true)}
+                      onClick={() => openSettings("llm")}
                     >
                       Connect an LLM
                     </button>{" "}

@@ -245,12 +245,22 @@ async def safe_validation_error(request: Request, error: RequestValidationError)
 
 
 @app.get('/api/llm-settings')
-async def llm_settings():
+async def llm_settings(request: Request):
+    _check_settings_origin(request)
     return get_settings().public_dict()
 
 
+def _check_settings_origin(request: Request) -> None:
+    origin = request.headers.get('origin')
+    allowed = os.environ.get('CORS_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',')
+    if (request.headers.get('sec-fetch-site') == 'cross-site'
+            or (origin and origin not in [str(request.base_url).rstrip('/'), *allowed])):
+        raise HTTPException(403, 'Settings can only be accessed from the application.')
+
+
 @app.post('/api/llm-settings')
-async def update_llm_settings(update: SettingsUpdate):
+async def update_llm_settings(request: Request, update: SettingsUpdate):
+    _check_settings_origin(request)
     settings = resolve_update(update)
     if not settings.configured:
         raise HTTPException(422, 'Enter an API key for the selected provider.')
@@ -262,7 +272,8 @@ async def update_llm_settings(update: SettingsUpdate):
 
 
 @app.post('/api/llm-settings/test')
-async def check_llm_connection(update: SettingsUpdate):
+async def check_llm_connection(request: Request, update: SettingsUpdate):
+    _check_settings_origin(request)
     settings = resolve_update(update)
     if not settings.configured:
         raise HTTPException(422, 'Enter an API key for the selected provider.')

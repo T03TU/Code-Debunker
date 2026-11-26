@@ -207,3 +207,23 @@ def test_corrupt_saved_settings_do_not_break_analysis(client):
     config.SETTINGS_PATH.write_text('broken-json')
     assert client.get('/api/llm-settings').status_code == 200
     assert client.post('/api/analyze', json={'code': SOURCE}).status_code == 200
+
+
+@pytest.mark.parametrize('path', ['/api/llm-settings', '/api/llm-settings/test'])
+def test_settings_reject_cross_origin_changes(client, path):
+    response = client.post(path, json={'provider': 'ollama', 'model': 'local'},
+                           headers={'Origin': 'https://unrelated.example'})
+    assert response.status_code == 403
+    assert not config.SETTINGS_PATH.exists()
+
+
+def test_simple_openai_settings_remain_readable(client):
+    config.SETTINGS_PATH.parent.mkdir()
+    config.SETTINGS_PATH.write_text(json.dumps({'model': 'existing-model',
+        'base_url': 'https://provider.example/v1', 'api_key': 'existing-private-key'}))
+    settings = client.get('/api/llm-settings')
+    assert settings.status_code == 200
+    assert settings.json()['provider'] == 'openai'
+    assert settings.json()['model'] == 'existing-model'
+    assert settings.json()['saved_credentials']['api_key'] is True
+    assert 'existing-private-key' not in settings.text

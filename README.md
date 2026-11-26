@@ -53,9 +53,11 @@ Then run:
 
 Open **http://127.0.0.1:5173**. The frontend proxies `/api` requests to the backend on port 8000. API documentation is at **http://127.0.0.1:8000/docs**. Stop both development services with Ctrl+C. The developer script uses polling to handle systems with exhausted file watchers.
 
+Open **Settings** using the gear button in the header. **Appearance** offers dark, light, or system color themes, five accent colors, text styles and sizes, and fine, regular, or bold icons. Changes apply immediately throughout the workspace, including the source editor and diagrams, and persist in this browser. **Reset appearance** restores the original theme.
+
 ## Explanations and generated tests
 
-Open **LLM settings** in the header to connect a model. The dialog opens automatically when no connection is configured; dismiss it to continue structural analysis. Choose a provider, enter the exact model ID (or Azure deployment name), and supply its credentials and endpoint where needed. **Test connection** makes a small request to check authentication and structured output; it may use provider credits. **Save settings** applies the configuration immediately, without restarting the app.
+Open **Settings → LLM configuration** in the header to connect a model. The dialog opens automatically when no connection is configured; dismiss it to continue structural analysis. Choose a provider, enter the exact model ID (or Azure deployment name), and supply its credentials and endpoint where needed. **Test connection** makes a small request to check authentication and structured output; it may use provider credits. **Save settings** applies the configuration immediately, without restarting the app.
 
 The dialog includes OpenAI, Anthropic, Google Gemini, Azure OpenAI, Amazon Bedrock, Google Cloud Vertex AI, OpenRouter, Ollama, and LM Studio. **Other OpenAI-compatible service** supports endpoints such as vLLM, llama.cpp, and private gateways. **Other provider (LiteLLM)** accepts `provider/model` identifiers for additional [LiteLLM-supported providers](https://docs.litellm.ai/docs/providers). Model names are editable rather than restricted to a fixed catalog. The model must support tool calling or JSON output; choose the appropriate **Structured output** mode and test it.
 
@@ -122,11 +124,11 @@ Build before starting the backend. FastAPI serves `frontend/dist` at **http://12
 
 ## Project state and remaining work
 
-The Antigravity handoff contained a working parser/model foundation and eight passing tests, API and sandbox scaffolding, and an incomplete frontend with a missing `App` component. `.agents` was empty; the actual rules and specialist instructions were in `.agent`. The continued implementation adds the workbench and closes critical API, graph, validation, and sandbox integration gaps.
+The Antigravity handoff contained a working parser/model foundation and eight passing tests, API and sandbox scaffolding, and an incomplete frontend with a missing `App` component. The continued implementation adds the workbench and closes critical API, graph, validation, and sandbox integration gaps.
 
 The current milestone supports **single source files and snippets**, up to 200 KB. It is a local workbench, with in-memory sessions that expire after an hour and a 100-session limit. Sessions disappear when the backend restarts; use one backend worker. It has no authentication and is not prepared for public deployment.
 
-Further work toward the broader vision in `GEMINI.md`:
+Further planned work:
 
 - Multi-file and repository ingestion, cross-file symbol resolution, and file-aware diagram navigation.
 - Go and Java extractors. Their grammars are present, but unsupported extraction now returns an explicit error instead of silently using the Python extractor.
@@ -134,5 +136,3 @@ Further work toward the broader vision in `GEMINI.md`:
 - Broader documentation audits for nested return keys, tuple elements, and exceptions; the current gate checks the target, syntax, unchanged executable tokens, parameter/default documentation, returns sections, and prerequisite count.
 - Repairing test harness failures after execution. Currently invalid syntax gets one generation retry, while actual runtime failures are reported without changing submitted source. Unexported JavaScript functions and unavailable internal imports may require additional harness support.
 - Persistent sessions, authentication, concurrency controls, smaller editor/layout bundles, and a separate execution service before deployment beyond a trusted local machine.
-
-See `GEMINI.md` for architectural invariants and `.agent/` for the original workflow instructions.

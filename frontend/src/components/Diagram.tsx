@@ -15,6 +15,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Braces, Box, Cable, CircleDot, Variable } from "lucide-react";
 import { layoutDiagram } from "@/lib/elk";
+import { accents, useTheme } from "@/lib/theme";
 import type { SourceSpan, UMLDiagram, UMLNodeData } from "@/types/api";
 
 type FlowNode = Node<UMLNodeData & { [key: string]: unknown }, "umlNode">;
@@ -79,6 +80,9 @@ export default function Diagram({
   testStatus,
   onSelect,
 }: Props) {
+  const { preferences, resolvedMode } = useTheme();
+  const edgeColor = resolvedMode === "dark" ? "#8996af" : "#66738b";
+  const accentColor = accents[preferences.accent][resolvedMode];
   const [laidOut, setLaidOut] = useState<UMLDiagram | null>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const flow = useRef<ReactFlowInstance<FlowNode> | null>(null);
@@ -122,15 +126,16 @@ export default function Diagram({
     label: edge.data.label,
     markerEnd: {
       type: MarkerType.ArrowClosed,
-      color: edge.data.kind === "data_flow" ? "#a78bfa" : "#657087",
+      color: edge.data.kind === "data_flow" ? accentColor : edgeColor,
     },
-    style: { stroke: edge.data.kind === "data_flow" ? "#a78bfa" : "#657087" },
-    labelStyle: { fill: "#c4cbd8", fontSize: 12 },
-    labelBgStyle: { fill: "#141823" },
+    style: { stroke: edge.data.kind === "data_flow" ? accentColor : edgeColor },
+    labelStyle: { fill: "var(--text)", fontSize: 12 },
+    labelBgStyle: { fill: "var(--surface)" },
   }));
   return (
     <div ref={canvas} className="graph-canvas">
       <ReactFlow
+        colorMode={resolvedMode}
         key={`${diagram.view}-${diagram.nodes.map((node) => node.id).join("|")}`}
         nodes={nodes}
         edges={edges}
@@ -157,7 +162,7 @@ export default function Diagram({
           variant={BackgroundVariant.Dots}
           gap={22}
           size={1}
-          color="#303645"
+          color="var(--border)"
         />
         <Controls showInteractive={false} />
       </ReactFlow>
