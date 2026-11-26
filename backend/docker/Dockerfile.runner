@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir pytest==8.3.5 pytest-json-report==1.5.0
+WORKDIR /opt/runner
+RUN npm install --no-audit --no-fund jest@29.7.0 ts-jest@29.2.6 typescript@5.6.3 @types/jest@29.5.14
+COPY jest.config.cjs /opt/runner/jest.config.cjs
+COPY jest-transform.cjs /opt/runner/jest-transform.cjs
+COPY run.py /opt/runner/run.py
+RUN groupadd -g 1000 sandbox && useradd -u 1000 -g 1000 -m sandbox
+WORKDIR /workspace
+USER 1000:1000
