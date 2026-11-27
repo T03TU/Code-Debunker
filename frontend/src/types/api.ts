@@ -210,12 +210,19 @@ export interface SandboxExecutionResult {
   duration_seconds: number;
 }
 
+export interface GenerationModel {
+  provider: string;
+  model: string;
+}
+
 export interface SimulateResponse {
   analysis_id: string;
   target_symbol_id: string | null;
   scope: TestScope;
   test_code: string;
   execution: SandboxExecutionResult;
+  suite?: TestSuite;
+  generation_model?: GenerationModel;
 }
 
 // App state
@@ -259,6 +266,7 @@ export interface TestsResponse {
   target_symbol_id: string | null;
   scope: TestScope;
   suite: TestSuite;
+  generation_model?: GenerationModel;
 }
 
 export interface QAResult {

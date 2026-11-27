@@ -1,4 +1,4 @@
-import type { DebunkSections, SimulateResponse, TestSuite } from "@/types/api";
+import type { DebunkSections, GenerationModel, SimulateResponse, TestSuite } from "@/types/api";
 
 interface ArtifactContext {
   filename: string;
@@ -7,6 +7,7 @@ interface ArtifactContext {
   targetName: string;
   scope: "function" | "flow";
   generatedAt?: string;
+  generationModel?: GenerationModel | null;
 }
 
 type ExplanationDraft = ArtifactContext & {
@@ -133,6 +134,12 @@ function metadataText(value: string) {
   return value.replace(/\s+/g, " ").replace(/[\\`*_{}\[\]()#+.!<>]/g, "\\$&");
 }
 
+export function artifactModelLabel(artifact: ArtifactDraft) {
+  return artifact.generationModel
+    ? `${artifact.generationModel.model} (${artifact.generationModel.provider})`
+    : "Not recorded";
+}
+
 function explanationMarkdown(artifact: ExplanationDraft) {
   const lines = [
     `# Explanation for ${metadataText(artifact.targetName)}`,
@@ -140,6 +147,8 @@ function explanationMarkdown(artifact: ExplanationDraft) {
     `Source file: ${metadataText(artifact.filename || "Untitled source")}`,
     "",
     `Language: ${metadataText(artifact.language)}`,
+    "",
+    `Model: ${metadataText(artifactModelLabel(artifact))}`,
   ];
   if (artifact.generatedAt)
     lines.push("", `Generated: ${artifact.generatedAt}`);
@@ -217,5 +226,8 @@ export function downloadTestCode(artifact: TestsDraft) {
     artifact.language === "python"
       ? `test_${stem.replace(/-/g, "_")}.py`
       : `${stem}.test.${artifact.language === "typescript" ? "ts" : "js"}`;
-  download(artifact.suite.test_code, filename, "text/plain;charset=utf-8");
+  const attribution = artifact.generationModel
+    ? `${artifact.language === "python" ? "#" : "//"} Generated model: ${artifactModelLabel(artifact).replace(/\s+/g, " ")}\n`
+    : "";
+  download(attribution + artifact.suite.test_code, filename, "text/plain;charset=utf-8");
 }

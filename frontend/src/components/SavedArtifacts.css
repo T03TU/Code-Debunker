@@ -78,6 +78,11 @@ dialog.saved-dialog {
   font-size: 1.125rem;
   font-weight: 600;
 }
+.saved-model {
+  margin: -4px 0 16px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
 
 .saved-actions {
   display: flex;

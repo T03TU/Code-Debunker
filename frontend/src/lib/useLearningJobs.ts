@@ -3,6 +3,7 @@ import { generateTestCases, simulate, streamDebunk } from "@/lib/api";
 import { explanationSectionNames } from "@/lib/artifacts";
 import type {
   DebunkSections,
+  GenerationModel,
   QAResult,
   SimulateResponse,
   TestScope,
@@ -18,6 +19,8 @@ interface LearningResult {
   generatingTests: boolean;
   simulating: boolean;
   error: string | null;
+  explanationModel: GenerationModel | null;
+  testModel: GenerationModel | null;
 }
 
 interface Operation {
@@ -41,6 +44,8 @@ const emptyResult = (): LearningResult => ({
   generatingTests: false,
   simulating: false,
   error: null,
+  explanationModel: null,
+  testModel: null,
 });
 const empty = emptyResult();
 const keyFor = (targetId: string | undefined, scope: TestScope) =>
@@ -105,7 +110,9 @@ export function useLearningJobs() {
     update(operation, () => ({ ...emptyResult(), explaining: true }));
     try {
       const stream = streamDebunk(analysisId, targetId, (event) => {
-        if (event.type === "section" && Object.prototype.hasOwnProperty.call(explanationSectionNames, event.name)) {
+        if (event.type === "slice_ready") {
+          update(operation, (result) => ({ ...result, explanationModel: event.generation_model ?? null }));
+        } else if (event.type === "section" && Object.prototype.hasOwnProperty.call(explanationSectionNames, event.name)) {
           try {
             const content = event.name === "prerequisite_concepts" ? JSON.parse(event.content) : event.content;
             update(operation, (result) => ({ ...result, sections: { ...result.sections, [event.name]: content } }));
@@ -113,7 +120,7 @@ export function useLearningJobs() {
             update(operation, (result) => ({ ...result, error: "The explanation contained an invalid section. Please retry." }));
           }
         } else if (event.type === "tests") {
-          update(operation, (result) => ({ ...result, suite: event }));
+          update(operation, (result) => ({ ...result, suite: event, testModel: event.generation_model ?? result.explanationModel }));
         } else if (event.type === "qa_result") {
           update(operation, (result) => ({ ...result, qa: event }));
         } else if (event.type === "error") {
@@ -132,10 +139,10 @@ export function useLearningJobs() {
     if (!operation) return;
     const controller = new AbortController();
     operation.cancel = () => controller.abort();
-    update(operation, (result) => ({ ...result, suite: null, execution: null, generatingTests: true, error: null }));
+    update(operation, (result) => ({ ...result, suite: null, testModel: null, execution: null, generatingTests: true, error: null }));
     try {
       const response = await generateTestCases(analysisId, targetId, scope, controller.signal);
-      update(operation, (result) => ({ ...result, suite: response.suite }));
+      update(operation, (result) => ({ ...result, suite: response.suite, testModel: response.generation_model ?? null }));
     } catch (error) {
       if (!controller.signal.aborted) update(operation, (result) => ({ ...result, error: errorMessage(error) }));
     } finally {
@@ -151,7 +158,10 @@ export function useLearningJobs() {
     update(operation, (result) => ({ ...result, execution: null, simulating: true, error: null }));
     try {
       const response = await simulate(analysisId, targetId, scope, controller.signal);
-      update(operation, (result) => ({ ...result, execution: response }));
+      update(operation, (result) => ({ ...result, execution: response,
+        suite: response.suite ?? result.suite,
+        testModel: response.suite ? response.generation_model ?? null : result.testModel,
+      }));
     } catch (error) {
       if (!controller.signal.aborted) update(operation, (result) => ({ ...result, error: errorMessage(error) }));
     } finally {
