@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import TestScenarios from "@/components/TestScenarios";
 import {
+  artifactModelLabel,
   deleteArtifact,
   downloadArtifact,
   downloadTestCode,
@@ -267,6 +268,7 @@ export default function SavedArtifacts({ onClose, initialId }: Props) {
                       {artifactLabel(item)} ·{" "}
                       {item.filename || "Untitled source"}
                     </small>
+                    <small>Model: {artifactModelLabel(item)}</small>
                     <time dateTime={item.savedAt}>
                       {dates.format(new Date(item.savedAt))}
                     </time>
@@ -282,6 +284,7 @@ export default function SavedArtifacts({ onClose, initialId }: Props) {
           >
             <p className="eyebrow">{artifactLabel(selected)}</p>
             <h3 className="saved-target">{selected.targetName}</h3>
+            <p className="saved-model">Model: {artifactModelLabel(selected)}</p>
             <div className="saved-actions">
               <button
                 className="button secondary"

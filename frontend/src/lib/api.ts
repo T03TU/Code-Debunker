@@ -1,5 +1,6 @@
 import type {
   AnalyzeResponse,
+  GenerationModel,
   IRSlice,
   SimulateResponse,
   TestScope,
@@ -175,9 +176,9 @@ export async function generateTestCases(
 }
 
 export type StreamEvent =
-  | { type: "slice_ready"; target_symbol_id: string; target_name: string }
+  | { type: "slice_ready"; target_symbol_id: string; target_name: string; generation_model?: GenerationModel }
   | { type: "section"; name: string; content: string }
-  | ({ type: "tests" } & TestSuite)
+  | ({ type: "tests"; generation_model?: GenerationModel } & TestSuite)
   | { type: "qa_result"; passed: boolean; errors: string[] }
   | { type: "done" }
   | { type: "error"; message: string };

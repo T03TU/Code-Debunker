@@ -358,6 +358,7 @@ export default function App() {
           ? "Complete source flow"
           : selected?.qualname || "Source",
       scope: kind === "explanation" ? ("function" as const) : testScope,
+      generationModel: kind === "explanation" ? functionResult.explanationModel : scopedResult.testModel,
     };
     if (kind === "explanation") {
       return Object.keys(sections).length ? { ...context, kind, sections } : null;

@@ -63,11 +63,17 @@ class SimulateRequest(BaseModel):
     scope: Literal['function', 'flow'] = 'function'
 
 
+class GenerationModel(BaseModel):
+    provider: str
+    model: str
+
+
 class TestsResponse(BaseModel):
     analysis_id: str
     target_symbol_id: str | None
     scope: Literal['function', 'flow']
     suite: GeneratedTestSuite
+    generation_model: GenerationModel
 
 
 class SimulateResponse(BaseModel):
@@ -76,6 +82,8 @@ class SimulateResponse(BaseModel):
     scope: Literal['function', 'flow'] = 'function'
     test_code: str
     execution: SandboxExecutionResult
+    suite: GeneratedTestSuite
+    generation_model: GenerationModel
 
 
 class SliceResponse(BaseModel):
@@ -244,6 +252,7 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
     ir_slice = _slice(session['ir'], symbol_id)
     settings = get_settings()
     _require_llm(settings)
+    generation_model = GenerationModel(provider=settings.provider, model=settings.model)
 
     def event(name, data):
         return {'event': name, 'data': json.dumps(data)}
@@ -252,7 +261,9 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
         tasks = []
         stage = 'explanation'
         try:
-            yield event('slice_ready', {'target_symbol_id': ir_slice.target_symbol_id, 'target_name': ir_slice.target_callable.name})
+            yield event('slice_ready', {'target_symbol_id': ir_slice.target_symbol_id,
+                                       'target_name': ir_slice.target_callable.name,
+                                       'generation_model': generation_model.model_dump()})
             local_model = settings.provider in ('ollama', 'lmstudio')
             tasks = [asyncio.create_task(_debunk(session, ir_slice, settings))]
             if not local_model:
@@ -269,7 +280,7 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
             if local_model:
                 tasks.append(asyncio.create_task(_tests(session, ir_slice, settings)))
             tests = await tasks[1]
-            yield event('tests', tests.model_dump())
+            yield event('tests', {**tests.model_dump(), 'generation_model': generation_model.model_dump()})
             yield event('qa_result', {'passed': True, 'errors': []})
             yield event('done', {})
         except Exception as error:
@@ -289,14 +300,16 @@ async def stream_debunk(analysis_id: str, symbol_id: str | None = Query(None)):
 @app.post('/api/tests/{analysis_id}', response_model=TestsResponse)
 async def generate_test_cases(analysis_id: str, req: SimulateRequest) -> TestsResponse:
     session = _session(analysis_id)
+    settings = get_settings()
     try:
-        target, tests = await _requested_tests(session, req, get_settings())
+        target, tests = await _requested_tests(session, req, settings)
     except HTTPException:
         raise
     except Exception as error:
         logger.warning('Test generation failed for %s (%s)', analysis_id, type(error).__name__)
         raise HTTPException(502, _generation_error_message(error, 'tests')) from None
-    return TestsResponse(analysis_id=analysis_id, target_symbol_id=target, scope=req.scope, suite=tests)
+    return TestsResponse(analysis_id=analysis_id, target_symbol_id=target, scope=req.scope, suite=tests,
+                         generation_model=GenerationModel(provider=settings.provider, model=settings.model))
 
 
 @app.post('/api/simulate/{analysis_id}', response_model=SimulateResponse)
@@ -317,7 +330,8 @@ async def simulate(analysis_id: str, req: SimulateRequest) -> SimulateResponse:
     execution = await asyncio.to_thread(runner.run_tests, source_code=session['code'],
                                        test_code=tests.test_code, language=session['ir'].metadata.primary_language)
     return SimulateResponse(analysis_id=analysis_id, target_symbol_id=target, scope=req.scope,
-                            test_code=tests.test_code, execution=execution)
+                            test_code=tests.test_code, execution=execution, suite=tests,
+                            generation_model=GenerationModel(provider=settings.provider, model=settings.model))
 
 
 @app.get('/api/capabilities')

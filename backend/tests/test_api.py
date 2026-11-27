@@ -462,3 +462,47 @@ def test_capabilities_do_not_require_credentials_or_docker(client, monkeypatch):
     assert response.json()['llm_configured'] is False
     assert response.json()['sandbox_available'] is False
     assert client.get('/health').json()['status'] == 'ok'
+
+@pytest.mark.parametrize('scope', ['function', 'flow'])
+def test_test_cases_record_the_request_model_when_settings_change(client, monkeypatch, scope):
+    first = llm_settings.LLMSettings(provider='ollama', model='original-model')
+    second = llm_settings.LLMSettings(provider='ollama', model='replacement-model')
+    llm_settings.save_settings(first)
+
+    async def generate(*args, settings=None, **kwargs):
+        assert settings.model == 'original-model'
+        llm_settings.save_settings(second)
+        return suite()
+
+    monkeypatch.setattr(api, 'generate_tests_async', generate)
+    monkeypatch.setattr(api, 'generate_flow_tests_async', generate)
+    result = analyze(client)
+    response = client.post(f"/api/tests/{result['analysis_id']}", json={'scope': scope})
+    assert response.status_code == 200
+    assert response.json()['generation_model'] == {'provider': 'ollama', 'model': 'original-model'}
+    assert llm_settings.get_settings().model == 'replacement-model'
+
+
+def test_explanation_stream_records_the_model_for_both_artifacts(client, monkeypatch):
+    llm_settings.save_settings(llm_settings.LLMSettings(provider='ollama', model='original-model'))
+
+    async def generate(ir_slice, feedback=None, settings=None):
+        llm_settings.save_settings(llm_settings.LLMSettings(provider='ollama', model='replacement-model'))
+        return debunk()
+
+    async def generate_tests(ir_slice, feedback=None, settings=None, explanation=None):
+        assert settings.model == 'original-model'
+        return suite()
+
+    monkeypatch.setattr(api, 'generate_debunk_async', generate)
+    monkeypatch.setattr(api, 'generate_tests_async', generate_tests)
+    result = analyze(client)
+    response = client.get(f"/api/stream/{result['analysis_id']}")
+    events = {}
+    for block in response.text.replace('\r\n', '\n').split('\n\n'):
+        if block.startswith('event: '):
+            name, data = block.split('\n', 1)
+            events[name.removeprefix('event: ')] = json.loads(data.removeprefix('data: '))
+    assert events['slice_ready']['generation_model'] == {'provider': 'ollama', 'model': 'original-model'}
+    assert events['tests']['generation_model'] == events['slice_ready']['generation_model']
+    assert 'replacement-model' not in response.text

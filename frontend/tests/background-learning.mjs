@@ -37,6 +37,7 @@ const bundle = await build({
 });
 
 const analysisId = "analysis-browser-test";
+let currentModel = { provider: "ollama", model: "original-model" };
 const functions = ["checkout", "main"].map((name, index) => ({
   id: name,
   name,
@@ -149,11 +150,12 @@ const server = createServer(async (request, response) => {
       });
     } else if (url.pathname.startsWith("/api/stream/")) {
       const target = url.searchParams.get("symbol_id");
+      const generation_model = { ...currentModel };
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
-      event(response, "slice_ready", { target_symbol_id: target, target_name: target });
+      event(response, "slice_ready", { target_symbol_id: target, target_name: target, generation_model });
       hold("explanation", target, response, () => {
         event(response, "section", { name: "feynman_explanation", content: `Explanation for ${target}` });
-        event(response, "tests", suiteFor(target, `Test cases with explanation for ${target}`));
+        event(response, "tests", { ...suiteFor(target, `Test cases with explanation for ${target}`), generation_model });
         event(response, "qa_result", { passed: true, errors: [] });
         event(response, "done", {});
         response.end();
@@ -162,6 +164,7 @@ const server = createServer(async (request, response) => {
       let body = "";
       for await (const chunk of request) body += chunk;
       const { scope, target_symbol_id } = JSON.parse(body);
+      const generation_model = { ...currentModel };
       const target = target_symbol_id ?? scope;
       const suite = suiteFor(target);
       if (url.pathname.startsWith("/api/tests/")) {
@@ -170,6 +173,7 @@ const server = createServer(async (request, response) => {
           target_symbol_id,
           scope,
           suite,
+          generation_model,
         }));
       } else {
         hold("test execution", target, response, () => json(response, {
@@ -177,6 +181,8 @@ const server = createServer(async (request, response) => {
           target_symbol_id,
           scope,
           test_code: suite.test_code,
+          suite,
+          generation_model,
           execution: {
             status: "PASS",
             exit_code: 0,
@@ -336,8 +342,77 @@ try {
   assert.equal(await output("Test cases for flow").count(), 0);
   await tab("Explanation").click();
   assert.equal(await output("Explanation for checkout").count(), 0);
+  // Persist the generating model, even when configuration changes before saving.
+  currentModel = { provider: "ollama", model: "original-model" };
+  await button("Analyze source").click();
+  await chooseFunction("checkout");
+  await tab("Explanation").click();
+  const generatingSavedExplanation = nextJob("explanation");
+  await button("Explain function").click();
+  const savedExplanation = await generatingSavedExplanation;
+  currentModel = { provider: "ollama", model: "replacement-model" };
+  await savedExplanation.finish();
+  await output("Explanation for checkout").waitFor();
+  await button("Save explanation").click();
+  await page.getByRole("status").filter({ hasText: "Saved to your library in this browser." }).waitFor();
+  await tab(testsTab).click();
+  const generatingSavedTests = nextJob("test generation");
+  await button("Generate test cases").click();
+  const savedTests = await generatingSavedTests;
+  currentModel = { provider: "ollama", model: "later-model" };
+  await savedTests.finish();
+  await output("Test cases for checkout").waitFor();
+  await button("Save test cases").click();
+  await page.getByRole("status").filter({ hasText: "Saved to your library in this browser." }).waitFor();
+  const stored = await page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("codedebunker-library", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      const items = await new Promise((resolve, reject) => {
+        const request = db.transaction("artifacts").objectStore("artifacts").getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const legacy = { ...items.find(item => item.kind === "explanation"), id: "legacy", targetName: "Legacy explanation" };
+      delete legacy.generationModel;
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction("artifacts", "readwrite");
+        transaction.objectStore("artifacts").add(legacy);
+        transaction.oncomplete = resolve;
+        transaction.onabort = () => reject(transaction.error);
+      });
+      return items;
+    } finally { db.close(); }
+  });
+  assert.equal(stored.find(item => item.kind === "explanation").generationModel.model, "original-model");
+  assert.equal(stored.find(item => item.kind === "tests").generationModel.model, "replacement-model");
+  await page.reload();
+  await button("Saved library").click();
+  const preview = page.getByRole("region", { name: "Saved item preview" });
+  await page.locator(".saved-item").filter({ hasText: "original-model" }).click();
+  await preview.getByText("Model: original-model (ollama)", { exact: true }).waitFor();
+  const markdownDownload = page.waitForEvent("download");
+  await preview.getByRole("button", { name: "Markdown", exact: true }).click();
+  const markdown = await markdownDownload;
+  const { readFile } = await import("node:fs/promises");
+  assert((await readFile(await markdown.path(), "utf8")).includes("Model: original-model"));
+  await page.locator(".saved-item").filter({ hasText: "replacement-model" }).click();
+  await preview.getByText("Model: replacement-model (ollama)", { exact: true }).waitFor();
+  const jsonDownload = page.waitForEvent("download");
+  await preview.getByRole("button", { name: "Test cases JSON", exact: true }).click();
+  const jsonFile = await jsonDownload;
+  assert.equal(JSON.parse(await readFile(await jsonFile.path(), "utf8")).generationModel.model, "replacement-model");
+  const testFileDownload = page.waitForEvent("download");
+  await preview.getByRole("button", { name: "Test file", exact: true }).click();
+  const testFile = await testFileDownload;
+  assert((await readFile(await testFile.path(), "utf8")).startsWith("# Generated model: replacement-model (ollama)\n"));
+  await page.locator(".saved-item").filter({ hasText: "Legacy explanation" }).click();
+  await preview.getByText("Model: Not recorded", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
-  console.log("Background explanation, test generation, Docker execution, and full-flow tests passed.");
+  console.log("Background jobs and saved model attribution, persistence, downloads, and legacy items passed.");
 } finally {
   await browser?.close();
   server.closeAllConnections();
